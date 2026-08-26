@@ -1,25 +1,113 @@
 # forecast-store
 
-The **forecast store**: TimescaleDB/Postgres as the persistence, evaluation, and
-monitoring layer for any forecasting model.
+**A forecast store is a bi-temporal store for forecasts** — and for the data
+they are made from and scored against. Producing a forecast has become nearly
+free; *operating* forecasts — keeping every vintage, guaranteeing
+point-in-time correctness, reproducing backtests, tracking accuracy, catching
+drift — is hand-rolled glue code on every team that ships one. This repo is an
+open schema convention for that layer on Postgres/TimescaleDB, plus its
+reference implementation: a schema generator, a small SDK, and adapters.
 
-Producing a forecast is nearly free; operating forecasts — keeping vintages,
-guaranteeing point-in-time correctness, tracking accuracy, detecting drift — is
-hand-rolled glue code everywhere. This package is the generator and reference
-implementation for an open schema convention that replaces that glue.
+Two ideas carry the whole design:
 
-- **Spec:** [`docs/forecast-store-convention.md`](docs/forecast-store-convention.md)
-  (draft v0.2 — pre-validation)
-- **Status:** Stage 1 validation spike against [OpenSTEF](https://github.com/OpenSTEF/openstef)
-  4.x (LF Energy). Private while the spike runs.
+- **Forecasts are tri-temporal.** Every row answers three questions with three
+  clocks: when is the value *true* (`target_time`), when did its source *know*
+  it (`available_at`), and when did your database *learn* it (`recorded_at`,
+  stamped by the database, never by a client). Cut `available_at` at a
+  simulated decision moment and backtests cannot leak — the query cannot
+  return what wasn't knowable. Pin `recorded_at` and evaluations reproduce
+  exactly, forever.
+- **A forecast store is a log of beliefs, not a table of values.** Measurements
+  and predictions are different kinds of belief and live in different
+  append-only tables; a revision or a new vintage is a new row, never an
+  update.
+
+| table | holds | a newer row about the same target |
+|---|---|---|
+| `actuals` | measurements, possibly revised | corrects it |
+| `predictors` | external forecast vintages (weather, prices) | re-predicts it |
+| `forecasts` | your models' output, with run provenance (`runs`) | re-predicts it |
+| `evaluation_*` | accuracy results | is a new evaluation |
 
 ## Quickstart
 
 ```bash
-uv run forecast-store ddl                                # print the schema
-uv run forecast-store provision --dsn postgres://...     # provision a store
-uv run --extra dev pytest                                # unit tests (no DB needed)
+pip install forecast-store        # v0 in preparation; see status below
+forecast-store ddl                # print the generated schema
+forecast-store provision --dsn postgres://...
 ```
 
-Runs on any Postgres 14+; hypertables, compression, and continuous aggregates
-light up automatically on TimescaleDB.
+Write a forecast with honest knowledge time, then read it back as-of any
+moment:
+
+```python
+import psycopg
+from forecast_store.config import StoreConfig
+from forecast_store.write import write_forecast_run
+
+config = StoreConfig()  # 7-level quantile band by default; fully declarable
+with psycopg.connect(DSN) as conn:
+    with conn.cursor() as cur:
+        cur.execute("SELECT forecast.register_series('site42/load', interval '15 minutes')")
+        series_id = cur.fetchone()[0]
+    write_forecast_run(
+        conn, config, series_id=series_id,
+        model="my-model", run_name="prod/site42",
+        available_at=now,                       # the knowledge time, recorded
+        points=[(ts, {"q05": 1.1, "q50": 2.0, "q95": 3.2}), ...],
+    )
+    conn.commit()  # run + points: one transaction
+```
+
+```sql
+-- The workhorse query: the latest belief per target, as of a knowledge cutoff.
+SELECT DISTINCT ON (target_time) target_time, available_at, q50
+FROM forecast.forecasts
+WHERE series_id = forecast.get_series_id('site42/load')
+  AND target_time BETWEEN %(t0)s AND %(t1)s
+  AND available_at <= %(asof)s
+ORDER BY target_time, available_at DESC;
+```
+
+## Validated against a real pipeline
+
+The convention is validated end-to-end against
+[OpenSTEF](https://github.com/OpenSTEF/openstef) (LF Energy's short-term
+energy forecasting pipeline), with the store as the *only* data source and
+result sink for its public liander2024 benchmark — real grid measurements with
+their real ~48-hour publication lags, weather as versioned vintage histories.
+Full official window, 5 wind parks × 306 days, identical store-served data:
+
+| model | avg rCRPS | avg rMAE@q50 |
+|---|---|---|
+| Chronos-2 base (zero-shot) | **0.0726** | **0.1016** |
+| Chronos-2 small (zero-shot) | 0.0739 | 0.1036 |
+| XGBoost (weekly retrain) | 0.0946 | 0.1107 |
+| GBLinear (weekly retrain) | 0.0947 | 0.1312 |
+
+The harness (`scripts/run_liander_benchmark.py`) also wraps TimesFM 2.5 and
+Moirai 2.0. Every number above is a row in the store's evaluation tables.
+
+## Documentation
+
+- **The convention** — the spec this package generates:
+  [`docs/forecast-store-convention.md`](docs/forecast-store-convention.md)
+- **Tutorial** — OpenSTEF on TimescaleDB in six steps:
+  [`docs/tutorials/openstef-on-timescaledb.md`](docs/tutorials/openstef-on-timescaledb.md)
+- **OpenSTEF adapter reference**:
+  [`docs/integrations/openstef.md`](docs/integrations/openstef.md)
+
+## Requirements and status
+
+Built for TimescaleDB (hypertables, columnstore, and the generated
+data-quality sweep); the core schema and read/write paths also run on plain
+Postgres 14+. Python ≥ 3.12.
+
+**Status: pre-release.** The convention is draft v0.4 (spike-validated; the
+spec's §11 keeps an honest ledger of open and closed design questions). The
+PyPI name currently holds a placeholder; the v0 package release is in
+preparation, and APIs may still change.
+
+## License
+
+Apache-2.0

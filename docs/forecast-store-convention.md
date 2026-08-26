@@ -7,6 +7,10 @@ the liander2024 Chronos-2 benchmark running end-to-end with a TimescaleDB store 
 only data source and result sink (§10). Pre-publication: findings folded in; remaining
 open items in §11.
 
+This is the normative spec — rules, DDL, and canonical queries. The reasoning behind each
+rule (alternatives considered, worked examples, and the full validation narrative) lives in
+the companion [design rationale](forecast-store-rationale.md).
+
 ---
 
 ## 1. Overview
@@ -20,9 +24,9 @@ time-series workloads, and the canonical queries — vintage selection, leakage-
 assembly, reproducible evaluation — that the convention exists to make correct and easy.
 
 The convention runs on any Postgres 14+ and lights up additional capability (hypertables,
-columnar compression) on TimescaleDB. It is model-agnostic: a
-time-series foundation model behind an API, a HuggingFace checkpoint, an XGBoost pipeline,
-and a hand-rolled ARIMA all write through the same tables.
+columnar compression) on TimescaleDB. It is model-agnostic: a time-series foundation model
+behind an API, a HuggingFace checkpoint, an XGBoost pipeline, and a hand-rolled ARIMA all
+write through the same tables.
 
 ---
 
@@ -93,9 +97,9 @@ convention so that the data outlives any particular tool.
 
 Every record in the store is a **belief**: a value about some moment in time, held as of
 some other moment in time, stored at a third. Forecast data is **tri-temporal** — in
-temporal-database terms: valid time, decision time, transaction time. Bi-temporal
-machinery standardizes the first and last; the middle axis, the knowledge clock, is the
-one forecasting turns on.
+temporal-database terms: valid time, decision time, transaction time. The knowledge clock
+(the middle axis) is the one forecasting turns on; see the [design rationale](forecast-store-rationale.md)
+§4.1 for why plain bi-temporal machinery doesn't cover it.
 
 - `target_time` — what the belief is *about* (the delivery interval, the metered quarter
   hour). Always a `time_bucket` boundary at the series' declared resolution, so that
@@ -103,25 +107,17 @@ one forecasting turns on.
 - `available_at` — when the belief was *knowable* in the domain: the moment the value
   became available to act on. A **domain claim, writable by design** — backfills set
   vendor publication times, backtests set simulated moments. One name, one axis, every
-  table — our forecasts, external inputs, revisioned actuals — so the canonical queries
-  are table-parameterized with no column renaming. The name is chosen against a common
-  trap: hand-rolled schemas call this column `created_at`, which *sounds like* system
-  time — a machine-stamped physical fact — while the column must accept written pasts
-  (backtests, bulk loads). In live operation compute time, availability, and ingest
-  coincide, so the misnomer hides; the first backtest forces a value that is false under
-  one reading of "created" or breaks vintages under the other. The convention's naming
-  rule: **a column may sound like system time only if the database stamps it** —
-  availability is a claim, `recorded_at` below is the measurement, and compute wall-clock
-  (provenance trivia with no query role) goes in `runs.params` if a connector cares.
+  table, so the canonical queries are table-parameterized with no column renaming.
+  **Naming rule: a column may sound like system time only if the database stamps it** —
+  `available_at` is a claim, `recorded_at` below is the measurement, and compute
+  wall-clock (provenance trivia with no query role) goes in `runs.params` if a connector
+  cares. (Why not `created_at`: rationale §4.1.)
 - `recorded_at` — when the store learned it: **system time, never written by clients**,
-  always `DEFAULT now()`. Because `available_at` is a writable claim, it cannot by itself
-  make backtests trustworthy: a row inserted at 09:00 stamped `available_at = 06:00`
-  would let a backtest "see" data production never had, and honest late arrivals silently
-  change past backtest results for the same cutoff. `recorded_at` is the measured fact
-  that resolves both — it pins reproducible backtests (§9.2) and records each row's
-  write mode (live vs retro, §7.2): retro-stamping is always visible, never undetectable. It sits in no primary key and
-  needs no index; it must exist from day one because ingest times not captured at write
-  time are unrecoverable.
+  always `DEFAULT now()`. It is the measured fact that pins reproducible backtests (§9.2)
+  and records each row's write mode (live vs. retro, §7.2) — retro-stamping is always
+  visible, never undetectable. It sits in no primary key and needs no index; it must exist
+  from day one because ingest times not captured at write time are unrecoverable. (Why
+  `available_at` alone isn't enough: rationale §4.1.)
 
 Tables are **append-only**: a new belief is a new row, never an `UPDATE`. This single rule
 makes vintages, as-of queries, and reproducible evaluation fall out of the schema with no
@@ -131,8 +127,8 @@ triggers and no versioning machinery.
 forecast history and actuals are never deleted or updated. Backtest artifacts, however,
 are simulated beliefs written under a run label, and harness contracts (e.g. openstef-beam
 "overwrite gracefully") may replace them wholesale — a delete scoped to that label, never
-touching production history. Evaluations are beliefs about quality and stay append-only:
-a re-evaluation is a new evaluation run (§7.5).
+touching production history. Evaluations are beliefs about quality and stay append-only: a
+re-evaluation is a new evaluation run (§7.5).
 
 A **vintage** is the set of beliefs about a target that were current at a given knowledge
 time. The **as-of query** (§9.1) selects one: latest `available_at` at or before a cutoff,
@@ -145,8 +141,8 @@ Everything in the store is an instance of one of two patterns:
 **Pattern 1 — Belief log.** `(series_id, target_time, available_at, recorded_at, value…)`,
 append-only. Instances: `actuals` (observations, possibly revised) and `predictors`
 (externally produced forecast vintages, e.g. weather). Both are read by as-of vintage
-selection. Single-belief actuals are the variant whose primary key admits one belief
-per target (§6.1).
+selection. Single-belief actuals are the variant whose primary key admits one belief per
+target (§6.1).
 
 **Which instance does a stream belong in?** Every quantity has a **realization moment** —
 the instant its true value becomes fixed: the meter interval ends, the auction clears.
@@ -154,25 +150,17 @@ Classify a stream by which side of that moment its rows are written on — equiv
 what a *newer row about the same target* would mean:
 
 - Written **at or after realization**, a row reports a fact, and a fact can only be
-  mis-measured — a newer row **corrects a measurement** (market settlement restates a
-  meter reading): the stream is `actuals`. There is one truth; newer rows are better
-  measurements of it.
+  mis-measured — a newer row **corrects a measurement**: the stream is `actuals`. There is
+  one truth; newer rows are better measurements of it.
 - Written **before realization**, a row guesses at a value that does not exist yet — a
-  newer row **re-predicts from newer information** (the 12Z weather run replacing the
-  06Z run): the stream is `predictors`. Each row was a valid forecast when made, not a
-  mistake the next one fixes.
+  newer row **re-predicts from newer information**: the stream is `predictors`. Each row
+  was a valid forecast when made, not a mistake the next one fixes.
 
 Publication *timing* plays no part in the test; what matters is where realization falls,
-and it need not fall at `target_time`. Concretely: the day-ahead price for Wednesday
-18:00 comes into existence on *Tuesday* — order books close at 12:00 CET, the clearing
-algorithm crosses aggregate supply and demand, and one binding price per delivery period
-publishes ~12:45. Before that run there is no price, only forecasts of it; after it there
-is a fact that only an exchange error could restate. The auctioneer does not predict the
-price — the clearing computation creates it ("day-ahead" names the product, not a guess
-about the day ahead). Exchange publications are therefore `actuals` with `available_at` a
-day before `target_time`, while a desk's Monday forecast *of* the same price is written
-before the value exists and belongs in `predictors`, scoreable against the cleared price
-once it exists. The full contrast between the two instances is §6.
+and it need not fall at `target_time` — e.g. a day-ahead power price is realized (and
+becomes `actuals`) the day *before* its `target_time`, when the market clears, while a
+desk's forecast of that same price is written beforehand and belongs in `predictors`
+(full worked example: rationale §4.2). The full contrast between the two instances is §6.
 
 **Pattern 2 — Forecast log.** A belief log *plus* run provenance — provenance is the
 discriminator, not the columns. Instance: `forecasts` — beliefs written *with a run row*:
@@ -183,18 +171,14 @@ and a probabilistic vendor feed may too (§6.2).
 
 ### 4.3 Why not SQL:2011 temporal features
 
-Postgres 18/19's temporal machinery models **versioned state**: one true row per key,
-revised in place, system time as an audit trail the system stamps. It also spans only two
-of §4.1's three axes — valid and transaction time; the knowledge clock has no
-standardized counterpart. The forecast store is the opposite: an immutable belief *log* where many vintages per target coexist as
-first-class data, and where knowledge time must be **writable** — bulk loads and simulated
-backtests set it explicitly. `WITHOUT OVERLAPS` on a (series, target) key would forbid
-vintages outright, and `AS OF` syntax cannot express the workhorse query
-(argmax-over-knowledge-time with relative cutoffs). The store does keep a system-time
-column (`recorded_at`, §4.1) — but as a plain queryable column, because the frozen
-backtest needs *both* clocks in one predicate with relative cutoffs (§9.2), which
-system-versioning machinery cannot express either. Plain timestamp columns and
-append-only semantics do all the work, on any Postgres since 14.
+The convention does not use Postgres 18/19's `WITHOUT OVERLAPS`/`AS OF` temporal
+machinery: that feature models versioned state (one true row per key, revised in place),
+covers only two of §4.1's three clocks, and cannot express the knowledge-time queries the
+store depends on. The store does keep a system-time column (`recorded_at`, §4.1), but as a
+plain queryable column — the frozen backtest needs both clocks in one predicate with
+relative cutoffs (§9.2), which system-versioning syntax cannot express either. Plain
+timestamp columns and append-only semantics do all the work, on any Postgres since 14. Full
+reasoning: rationale §4.3.
 
 ### 4.4 A generative convention
 
@@ -206,9 +190,9 @@ generator**:
 - The spec defines the *patterns*, the *naming rule*, and the *canonical queries*.
 - Each store **declares** its configuration (quantile band, value columns, enforcement
   mode) as data, in the store itself (§5.2).
-- The SDK/skill **generates** the concrete DDL and serving views
-  from that declaration, at provisioning time. Changing a declaration is an explicit,
-  tool-executed migration — never a side effect of a write.
+- The SDK/skill **generates** the concrete DDL and serving views from that declaration, at
+  provisioning time. Changing a declaration is an explicit, tool-executed migration —
+  never a side effect of a write.
 
 A *reference instantiation* (shown throughout this document) is published as static DDL so
 the convention remains copy-pasteable without any tooling.
@@ -240,70 +224,51 @@ CREATE FUNCTION forecast.register_series(name text, ...) RETURNS bigint ...;
 ```
 
 **Identity design.** Series identity is a generated `bigint` surrogate; the human-facing
-slug lives in `series.name` (`fr_da_price`, `mvf_gorredijk_3`). Points tables carry only
-the bigint — 8 bytes instead of a 20-odd-byte string in every row and, more importantly,
-in every entry of the PK and as-of indexes, which never compress. Integer comparisons also
-cut the sort cost of the `DISTINCT ON` paths. Three rules make the surrogate safe and
-ergonomic:
+slug lives in `series.name` (`fr_da_price`, `mvf_gorredijk_3`) — smaller, faster-sorting
+keys on the store's largest tables and indexes (full comparison against a natural text
+key: rationale §5.1). Three rules keep the surrogate safe and ergonomic:
 
 1. **Resolve in SQL, at write time.** `forecast.get_series_id(name)` is strict — it raises
-   on an unknown name, so a typo'd write fails loudly at insert time, stronger than any
-   after-the-fact sweep. Canonical usage stays a legible one-liner:
-   `WHERE series_id = forecast.get_series_id('fr_da_price')` (`STABLE`, evaluated once by
-   the planner). `register_series(...) RETURNS bigint` is the get-or-create path.
+   on an unknown name, so a typo'd write fails loudly at insert time. Canonical usage stays
+   a legible one-liner: `WHERE series_id = forecast.get_series_id('fr_da_price')`
+   (`STABLE`, evaluated once by the planner). `register_series(...) RETURNS bigint` is the
+   get-or-create path.
 2. **Ids are never deleted, never reused.** Series are disabled via a flag, not removed. A
    name→id mapping, once correct, is therefore correct forever — bulk writers that must
-   pre-resolve (COPY cannot evaluate functions: stage, then
-   `INSERT … SELECT get_series_id(name), …`) cannot be misattributed by a stale cache.
+   pre-resolve (COPY cannot evaluate functions: stage, then `INSERT … SELECT
+   get_series_id(name), …`) cannot be misattributed by a stale cache.
 3. **Reads speak names.** Generated read views join the registry to expose `name`, so BI
    tools, agents, and dashboards never traffic in bare numbers.
 
-Because identity lives in the number, `name` can be renamed with a one-row update — keep
-names stable as a courtesy, not a constraint. One deliberate asymmetry: `run_id` stays
-uuid, because runs are minted client-side by distributed writers that cannot round-trip
-for an identity value; series are registry-owned, which is exactly what makes a generated
-key workable. *Alternative considered — natural text key* (`series_id text` in every
-table): join-free queries and self-describing rows in psql, but permanently larger
-never-compressed index entries and collated sorts on the store's biggest tables — and the
-strict resolver reverses the integrity comparison anyway: a typo'd name now errors at
-write time, where the text design let it create a phantom series for the sweep to find
-later.
+Because identity lives in the number, `name` can be renamed with a one-row update. One
+deliberate asymmetry: `run_id` stays uuid, because runs are minted client-side by
+distributed writers that cannot round-trip for an identity value; series are
+registry-owned, which is exactly what makes a generated key workable.
 
 **Typed-column criterion.** A column earns typed status only when store machinery computes
-on it (`sample_interval`, `timezone`) or when it is a universal descriptor of the
-measure itself (`unit`). One acknowledged exception: `description`, a documentation field
-for humans, BI, and agents — nothing computes on it, and the spec keeps it typed anyway as
-catalog hygiene. Everything else — coordinates, country codes, capacity limits, cohort
-labels — is still a series fact and still lives in the registry, but under
-**adapter-documented keys in `metadata`**
-(e.g. `metadata->'location'->>'latitude'`, `metadata->'limits'->>'upper'`,
-`metadata->'tags'->>'group'`), so that a deployment outside a given domain carries no
-permanently-NULL columns imported from someone else's use case. Tags in particular beat a
-typed grouping column: real fleets segment along several axes at once (region × asset type
-× customer), which one flat column cannot express and arbitrary tag keys can — and grouped
-rollups work fine on a jsonb extraction. Promotion is deliberately cheap: `series` is a
-small plain table, so lifting a key to a typed column is an `ALTER TABLE` plus a
-convention-version bump, taken when store machinery starts computing on it (the expected
-example: alarm thresholds when residual monitoring ships).
+on it (`sample_interval`, `timezone`) or when it is a universal descriptor of the measure
+itself (`unit`) — `description` is the one deliberate exception, kept typed as catalog
+hygiene for humans, BI, and agents. Everything else — coordinates, country codes, capacity
+limits, cohort labels — is still a series fact, but lives under adapter-documented keys in
+`metadata` (e.g. `metadata->'location'->>'latitude'`, `metadata->'limits'->>'upper'`), so a
+deployment outside a given domain carries no permanently-NULL imported columns. Promotion
+is deliberately cheap — `series` is a small table, so lifting a key to a typed column is an
+`ALTER TABLE` plus a version bump, taken when store machinery starts computing on it. (Why
+tags beat a typed grouping column: rationale §5.1.)
 
 The registry is **load-bearing, not descriptive**:
 
 1. **Declared resolution.** The shared bucket grid (§4.1) is only enforceable if the
-   resolution lives somewhere authoritative. Client-side containers (pandas `attrs`,
-   dataframe metadata) are silently dropped by common operations and libraries fall back to
-   silent defaults; the registry is the source of truth, and the SDK write path validates
-   incoming timestamps against it.
+   resolution lives somewhere authoritative — the registry is the source of truth, and the
+   SDK write path validates incoming timestamps against it.
 2. **Adapters hydrate from it.** Feature engineering reads the registry, not just the
    points tables — e.g. an energy adapter derives weather joins and holiday calendars from
-   `metadata->'location'` and `->>'country_code'`, and evaluation peak metrics read
-   `metadata->'limits'`. The same limits become per-series alarm thresholds when residual
-   monitoring points the evaluation machinery at assets instead of models.
+   `metadata->'location'`, and evaluation peak metrics read `metadata->'limits'`.
 
 **Principle — runs snapshot; the registry stays current.** Registry rows are mutable
 (limits get retuned, locations corrected). Reproducibility does not depend on registry
-history because every run records the configuration it actually used (§7.1). This keeps
-slowly-changing-dimension machinery out of the core spec; system-versioned metadata remains
-an optional future enhancement, not a correctness requirement.
+history because every run records the configuration it actually used (§7.1) — this keeps
+slowly-changing-dimension machinery out of the core spec.
 
 ### 5.2 Store self-description
 
@@ -321,42 +286,29 @@ CREATE TABLE forecast.store_tables (
 ```
 
 One row per provisioned table. This is the store describing itself: the declared quantile
-band, value columns, role, and enforcement mode are **data**, readable by every client. A
-Python SDK in an orchestrator, a TypeScript reader in a dashboard, an agent composing SQL,
-and an analyst in psql all reconstruct the store's shape from the same rows instead of
-carrying config copies that drift.
+band, value columns, role, and enforcement mode are **data**, readable by every client — a
+Python SDK, a TypeScript reader, an agent composing SQL, and an analyst in psql all
+reconstruct the store's shape from the same rows instead of carrying config copies that
+drift.
 
-Design notes:
-
-- **One row per table, not key-value.** A table's configuration is one logical object;
-  a single-row upsert is atomic, so readers never observe a half-updated config.
-- **Per-table `convention_version`.** Migrations move one table at a time; "which version
-  is *this* table at" is the question migration tooling asks. It is also the operable form
-  of a published stability commitment: every store records what provisioned it.
-- **Two layers in each declaration: mechanical keys and role.** `value_columns`,
-  `knowledge_column`, and `has_runs` answer *how* to read and write the table — code
-  dispatches on them per operation. `role` answers *what the table means*, and its
-  consumers are purpose-level: enumeration ("which tables are ground truth / vendor feeds
-  / forecast logs" — the only way to ask under multi-instance without hardcoding names),
-  semantics of shared arithmetic (`recorded_at − available_at` is vendor delivery lag on
-  predictors, settlement lag on actuals, write lag / write mode on forecast logs, §7.2), monitoring dispatch (missing-data alarms watch actuals; publication-lag watches
-  predictors; drift watches forecast logs — a misrouted role is a misrouted page, not a
-  mislabel), and policy defaults including the scope of §4.1's sanctioned delete. Role is
-  not inferred from shape — declaration beats introspection — and it cannot drift: the
-  generator derives the mechanical keys *from* the role, so declaration and DDL share one
-  source.
-- **`store_tables` is the read-routing registry; `series` carries no routing at all.**
-  A series is a *quantity*: one identity may have measurements in `actuals`, vendor
-  vintages in `predictors`, and forecasts in one or more forecast logs — three belief
-  types about the same thing (which is what makes vendor scoring a same-series
-  equi-join). So routing cannot be a series attribute; **APIs take table names**, and the
-  reader resolves each named table's declaration here — `value_columns`,
-  `knowledge_column`, `has_runs` — validating the request against the store's own
-  self-description (names are whitelisted by construction: an unknown table is a loud
-  error, not SQL). The §4.2 classification rule remains, reworded to what it always was:
-  a rule about **which table a writer sends a stream to**, not a registration. This is
-  also what makes additional instances (a second forecast table) readable with zero new
-  machinery: another row here.
+- **One row per table, not key-value.** A table's configuration is one logical object; a
+  single-row upsert is atomic, so readers never observe a half-updated config.
+- **Per-table `convention_version`.** Migrations move one table at a time, and every store
+  records what provisioned it.
+- **Mechanical keys vs. role.** `value_columns`, `knowledge_column`, and `has_runs` answer
+  *how* to read and write the table; `role` answers *what the table means* — enumeration
+  ("which tables are ground truth / vendor feeds / forecast logs"), the semantics of
+  shared arithmetic (`recorded_at − available_at` means delivery lag, settlement lag, or
+  write mode depending on role, §7.2), monitoring dispatch, and policy defaults including
+  the scope of §4.1's sanctioned delete. The generator derives mechanical keys *from* the
+  role, so declaration and DDL can't drift. (Why role isn't inferred from shape: rationale
+  §5.2.)
+- **`store_tables` is the read-routing registry; `series` carries no routing.** A series is
+  a *quantity*: one identity may have measurements in `actuals`, vendor vintages in
+  `predictors`, and forecasts in one or more forecast logs. So **APIs take table names**,
+  and the reader resolves each named table's declaration here — an unknown table is a loud
+  error, not SQL. This is also what makes additional instances (a second forecast table)
+  readable with zero new machinery: another row here. (Full reasoning: rationale §5.2.)
 
 ---
 
@@ -380,12 +332,11 @@ Which of `predictors` vs `forecasts` (pattern 2): **provenance, not origin** —
 that can supply a run row (context window, params, model identity) writes a forecast log,
 wherever its compute runs; `predictors` is for vintages where all anyone knows is
 `(target_time, available_at, value)`. Vendor feeds are the shorthand, not the rule — and
-our own forecasts consumed as another model's input stay in `forecasts`, never copied
-here (§9.1 reads them with the same as-of shape).
+our own forecasts consumed as another model's input stay in `forecasts`, never copied here
+(§9.1 reads them with the same as-of shape).
 
 They are sibling tables, not one table with a role column: the evaluation join must read
-"the actuals" without filtering out future-dated vendor rows, and retention is
-per-table.
+"the actuals" without filtering out future-dated vendor rows, and retention is per-table.
 
 ### 6.1 Actuals
 
@@ -403,48 +354,38 @@ CREATE TABLE forecast.actuals (
 SELECT create_hypertable('forecast.actuals', 'target_time');
 ```
 
-**Revisions are the PK switch.** Both shapes carry the same columns: `available_at` is the
-knowledge clock everywhere, its `DEFAULT now()` making the lazy path honest (arrival)
-and its writability making backfills honest on *both* tiers — state genuine per-row
-availability and history behaves as if ingested live; a claimless load defaults to its
-load date, and knowledge-cutoff backtests over it fail loud, not quietly optimistic.
-What differs is the key. **Single-belief** — `(series_id, target_time)` — admits one
-belief per target: for owned telemetry and publish-once pipelines where a second belief is a defect
-to surface, not a fact to record. Its canonical write is `INSERT … ON CONFLICT
-(series_id, target_time) DO UPDATE SET value = EXCLUDED.value` under the generated
-`belief_guard` trigger: an identical re-delivery is a silent no-op (the stored claim is
-preserved — first claim wins), a *conflicting* value raises — never silently swallowed.
-(The trigger is verified inert under compression, decompression, policy jobs, and DML
-over compressed chunks; deep re-delivery over compressed history decompresses touched
-segments — the workspace GUC precedent, §10, applies.) **Revisioned** — `(series_id,
-target_time, available_at)` — keys revisions by the knowledge clock: for
-settlement-grade domains where actuals are corrected for weeks and pinned cutoffs (§9.2)
-keep backtests reproducible, `recorded_at` guarding the claims. Its idempotency is `ON
-CONFLICT DO NOTHING`, and that is doctrine, not accident: the revisioned PK names a
-belief's *full coordinates*, so a colliding row with a different value is a **retcon** —
-a re-assertion of what a past publication said — refused first-wins; a genuine
-correction is a new belief under a new `available_at`. A publish-once *external* feed
-belongs in the revisioned shape, not single-belief: "never revises" is a claim about the world, the world
-restates, and a restatement should land and page rather than bounce.
+**Revisions are the PK switch.** Both shapes carry the same columns; what differs is the
+key. **Single-belief** — `(series_id, target_time)` — admits one belief per target: for
+owned telemetry and publish-once pipelines where a second belief is a defect to surface,
+not a fact to record. Its canonical write is `INSERT … ON CONFLICT (series_id,
+target_time) DO UPDATE SET value = EXCLUDED.value` under the generated `belief_guard`
+trigger: an identical re-delivery is a silent no-op (first claim wins), a *conflicting*
+value raises — never silently swallowed. (Verified inert under compression,
+decompression, and DML over compressed chunks.) **Revisioned** — `(series_id, target_time,
+available_at)` — keys revisions by the knowledge clock: for settlement-grade domains where
+actuals are corrected for weeks and pinned cutoffs (§9.2) keep backtests reproducible. Its
+idempotency is `ON CONFLICT DO NOTHING`: the revisioned PK names a belief's full
+coordinates, so a colliding row with a different value is a **retcon** — refused,
+first-wins — while a genuine correction is a new belief under a new `available_at`. A
+publish-once *external* feed belongs in the revisioned shape, not single-belief: "never
+revises" is a claim about the world, and a restatement should land and page rather than
+bounce. (Why `available_at` defaults to `now()` here specifically, and what a claimless
+backfill does: rationale §6.1.)
 
 **Optional per-instance column: `target_time_observed`.** When ingest grid-aligns a 1:1
 stream by snapping timestamps (§4.1), an actuals instance may declare
-`target_time_observed timestamptz` — the device's original, unsnapped timestamp. It is
-the *subject* clock as observed, not a fourth epistemic clock: a writable claim with no
-query role (nothing as-ofs, joins, or pins on it), carried for forensics and monitoring.
-**Nullable by design** — NULL honestly means "not recorded"; a NOT NULL contract would
-push mixed-quality feeds toward fabricating `target_time` as the observation, jitter-zero
-lies that poison the diagnostic (the lazy path must stay the safe path). Never in the PK,
-never defaulted. `target_time_observed − target_time` is the measurement-side jitter
-diagnostic, mirroring `recorded_at − available_at` as delivery lag; the §8 sweep checks
-the in-bucket invariant (an observed timestamp outside its target's bucket is a snapping
-bug) and can watch per-series NULL coverage. N:1 aggregation is different — it loses a
+`target_time_observed timestamptz` — the device's original, unsnapped timestamp. It has no
+query role (nothing as-ofs, joins, or pins on it) and exists for forensics and monitoring
+only. **Nullable by design, never in the PK, never defaulted** — NULL means "not
+recorded"; a NOT NULL contract would push mixed-quality feeds toward fabricating
+`target_time` as the observation (rationale §6.1). `target_time_observed − target_time` is
+the measurement-side jitter diagnostic, mirroring `recorded_at − available_at` as delivery
+lag; the §8 sweep checks the in-bucket invariant. N:1 aggregation is different — it loses a
 *set*, which no column holds; those inputs live upstream (§11).
 
 An **existing-table mode** points the actuals role at a pre-existing telemetry hypertable
 instead of provisioning one: `store_tables.config` records the source table and column
-mapping (including the registry join to series ids), all read paths compile through it,
-and enforcement is necessarily `monitor` (§8).
+mapping, all read paths compile through it, and enforcement is necessarily `monitor` (§8).
 
 ### 6.2 Predictors
 
@@ -461,11 +402,10 @@ SELECT create_hypertable('forecast.predictors', 'target_time');
 ```
 
 A probabilistic vendor declares a quantile band on its instance — `quantile_band` in its
-`store_tables` config (§5.2) — same naming rule, same generated columns and
-reads as a forecast log's band; what it never gains is run provenance. One more choice
-beyond the table above: the point column is **`value`, not `mean`** — a
-vendor's point value is often a deterministic run or a median, so a `mean` column would
-assert a statistic the feed may not have (the `mean`≠`q50` honesty rule in reverse). A
+`store_tables` config (§5.2) — same naming rule, same generated columns and reads as a
+forecast log's band; what it never gains is run provenance. The point column is
+**`value`, not `mean`** — a vendor's point value is often a deterministic run or a median,
+so a `mean` column would assert a statistic the feed may not have (rationale §6.2). A
 *known* statistic is per-feed registry metadata (`metadata->>'statistic'`).
 `forecasts.mean` stays `mean`: pattern 2 is our own output, where the connector knows
 exactly what it produced. `recorded_at − available_at` here is the measured **vendor
@@ -498,17 +438,13 @@ CREATE TABLE forecast.runs (
   contaminated.
 - `params` is the **as-used snapshot**: the fully resolved configuration (registry values
   merged with the caller's engine config), plus gap-fill statistics from context assembly.
-  Snapshots are a few KB of mostly identical jsonb per run and compress to near nothing; a
-  deduplicating config-versions table is a documented scale path, not part of v0.
-- `run_name` is a caller-supplied grouping label — the job name, benchmark run, or model
-  id — so evaluation can group runs without any job machinery in the store (§7.4).
-- `model_version` identifies the trained artifact (e.g. the MLflow model version) — the
+- `run_name` is a caller-supplied grouping label — job name, benchmark run, or model id —
+  so evaluation can group runs without any job machinery in the store (§7.4).
+- `model_version` identifies the trained artifact (e.g. an MLflow model version) — the
   thread from any stored forecast back to the exact model binary.
-- `available_at` is writable by design: production stamps `now()`; backtests stamp
-  the simulated decision moment. Same column, both uses (§4.3). `recorded_at` guards the
-  claim (§4.1): a production run has `available_at ≈ recorded_at`, a backtested run a
-  claim in the past — so run-level provenance is self-contained, without inspecting
-  points.
+- `available_at` is writable by design: production stamps `now()`, backtests stamp the
+  simulated decision moment. `recorded_at` guards the claim (§4.1): a production run has
+  `available_at ≈ recorded_at`, a backtested run a claim in the past.
 
 ### 7.2 Forecast points
 
@@ -538,54 +474,31 @@ CALL add_columnstore_policy('forecast.forecasts',
     after => INTERVAL '7 days', if_not_exists => true);
 ```
 
-Design notes carried in the DDL:
-
 - `available_at` is denormalized onto the points so as-of queries are single
   index-friendly scans, never joins through `runs`.
 - Partitioning on `target_time`: evaluation and serving both join actuals on it, and
-  compression/retention then operate on old target periods.
+  compression/retention operate on old target periods.
 - The table is append-only; a new belief is a new row.
-- `recorded_at` makes retro-writing **visible, never undetectable**: the gap
-  `recorded_at − available_at` is the row's **write mode** — *live* (gap ≈ **write
-  lag**: clock skew plus publish-to-persist latency, milliseconds in-process,
-  structurally more through queues) or *retro* (a past claim, written later). Write mode
-  is not origin: a backtest vintage and a migrated slice of real production history are
-  clock-identical, and both are legitimate — *origin* (production vs simulation) lives
-  once, on the run, as provenance; the points tables carry no `is_backtest` column
-  because that fact is run-level, not row-level. The gap cannot be constrained (its
-  freedom is what admits backtests and migrations at all); on live paths it is a
-  monitored invariant with a deployment-declared threshold (§8's anomalous-gap alert).
-  Write lag joins delivery lag (`recorded_at − available_at` on predictors, §6.2) and
-  jitter (`target_time_observed − target_time`, §6.1) as the third clock-difference
-  diagnostic: same subtraction, different table, different alarm.
-- Columnstore settings follow pg-aiguide's hypertable guidance and are generated for
-  every points table: `segmentby = 'series_id'` (the primary filter, high row density per
-  chunk); `orderby` on the two clocks (adjacent rows in a segment are a target's
-  consecutive vintages — a natural progression that compresses well — and orderby columns
-  get minmax sparse indexes automatically, which are exactly the as-of predicates); a
-  7-day columnstore policy (beliefs are immutable on write, but the recent window stays
-  rowstore for the hot serving path). Knowledge-clock predicates — as-of cutoffs, publication windows — are
-  served by partition pruning on `target_time` plus the orderby minmax sparse indexes
-  within each chunk.
-- The generator deliberately converts after creation (`create_hypertable` with
-  `migrate_data`) rather than using `CREATE TABLE … WITH (tsdb.*)`: the table DDL stays
-  identical on every Postgres (one canonical schema), and re-running provision upgrades a
-  populated plain-Postgres store in place when the extension appears — the WITH form
-  cannot retrofit, since `IF NOT EXISTS` no-ops on an existing plain table.
-- **One instance by default; more when a table-scoped policy genuinely differs.** The
-  forecast log may be instantiated more than once (the pattern is defined once and
-  instantiated per role, and `store_tables` admits multiple rows sharing a role). The
-  legitimate drivers are all per-hypertable policies: retention split between production
-  history and experiment workspace (the Decision-2 sibling argument applied within the
-  role), chunk intervals or bands for genuinely disjoint cadence domains, and tenancy
-  (erasure as `DROP TABLE`). The cost is what the single table buys — cross-model
-  evaluation as one query, one serving view, one as-of surface — so the default stays
-  one, and splitting requires a policy that actually differs. Instances multiply with
-  zero new read machinery: APIs take table names validated against `store_tables`
-  (§5.2), so a second forecast table is readable the moment its row exists — an extra
-  instance is just one more declared `store_tables` row the generator emits (own
-  band or PK shape per instance; provisioning is additive). The workspace driver is validated
-  in the OpenSTEF benchmark harness (§10).
+- `recorded_at − available_at` is the row's **write mode** — *live* (a small gap — **write lag**:
+  clock skew plus publish-to-persist latency) or *retro* (a past claim, written later) — making
+  retro-writing visible, never undetectable. Write mode is not origin: a backtest vintage
+  and a migrated slice of real production history are clock-identical; *origin*
+  (production vs. simulation) lives once, on the run, as provenance — the points tables
+  carry no `is_backtest` column. On live paths the gap is a monitored invariant with a
+  deployment-declared threshold (§8). It joins delivery lag (§6.2) and jitter (§6.1) as
+  the third clock-difference diagnostic.
+- Columnstore settings follow pg-aiguide's hypertable guidance and are generated for every
+  points table: `segmentby = 'series_id'`, `orderby` on the two clocks, a 7-day columnstore
+  policy. (Why these specific settings: rationale §7.2.)
+- The generator converts to a hypertable after creation (`create_hypertable` with
+  `migrate_data`) rather than `CREATE TABLE … WITH (tsdb.*)`, so table DDL stays identical
+  on every Postgres and re-running provision can upgrade a populated plain-Postgres store
+  in place. (Why not the `WITH` form: rationale §7.2.)
+- **One instance by default; more when a table-scoped policy genuinely differs**
+  (retention split between production and experiment workspace, disjoint cadence domains,
+  tenancy). Instances multiply with zero new read machinery — APIs take table names
+  validated against `store_tables` (§5.2), so a second forecast table is readable the
+  moment its row exists. (Full tradeoff discussion: rationale §7.2.)
 
 ### 7.3 Quantile representation
 
@@ -593,46 +506,24 @@ Design notes carried in the DDL:
 band, plus a blessed `mean` column.
 
 **Naming rule** (deterministic and bijective): column = `q` + the percent value, integer
-part zero-padded to two digits, decimal point replaced by underscore.
-`0.05 → q05`, `0.5 → q50`, `0.025 → q02_5`, `0.999 → q99_9`.
+part zero-padded to two digits, decimal point replaced by underscore. `0.05 → q05`, `0.5 →
+q50`, `0.025 → q02_5`, `0.999 → q99_9`.
 
 **The `mean` column** carries point/mean forecasts. A point forecast writes `mean`, never
 `q50` — a mean is not a median, and the schema should not invite the lie.
 
-**Band declaration and change.** The band is declared in `store_tables.config`
-(§5.2) and is the source from which the generator emits columns,
-serving views, and per-column compression settings. Changing the band is an explicit
-tool-executed migration (add columns, regenerate derived objects) with documented cost.
-In practice bands change rarely: accuracy history is not comparable across bands, so
-deployments pin one.
+**Band declaration and change.** The band is declared in `store_tables.config` (§5.2) and
+is the source from which the generator emits columns, serving views, and per-column
+compression settings. Changing the band is an explicit tool-executed migration with
+documented cost. In practice bands change rarely: accuracy history is not comparable
+across bands, so deployments pin one.
 
 **Connector policy.** Model connectors meet the store's band: request it directly where
 the model API allows, interpolate from the model's native quantiles where it does not, and
 record which happened in `runs.params`.
 
-**Alternatives considered:**
-
-- *Long/narrow* (one row per quantile, `quantile` as a numeric column). Gives one
-  permanently stable DDL and quantile-generic per-quantile rollups (`GROUP BY quantile`),
-  but: each value pays the full key tuple (~70–90 bytes of key and row header per 8-byte
-  value, and ~band-size× the rows and index entries — indexes never compress); the hot
-  serving path needs a pivot on every read; a logical forecast becomes multiple rows,
-  admitting torn partial writes; and the genericity argument fails exactly where it
-  matters most — cross-quantile metrics (interval coverage, sharpness, quantile-crossing
-  checks) need multiple levels of the same point in one expression, which wide rows give
-  for free.
-- *jsonb quantiles* (`{"0.05": 11.2, …}` per row). Flexibility of long with the row count
-  of wide, but: several-fold worse compression on the store's largest table (keys repeated
-  in every row, values as opaque blobs, no per-column chunk exclusion); an extraction and
-  cast in every canonical query; a text-key normalization footgun (`'0.5'` vs `'0.50'` vs
-  `'q50'`) that moves errors from write time to silent read-time NULLs; hostile to BI and
-  to per-quantile aggregation. The principled line: jsonb for run-scoped metadata that is
-  occasionally filtered (`runs.params` — correct use), typed columns for point-scoped
-  measures that everything aggregates.
-- *One frozen wide superset* (bless N columns forever). Any fixed set eventually fails —
-  `q2.5/q97.5`, the standard 95% interval, is already awkward — and every miss is a spec
-  break in a document meant to be cited as stable. The generative convention (§4.4) keeps
-  wide's physics without freezing the set.
+Three alternatives — long/narrow rows, jsonb quantiles, one frozen wide superset — were
+considered and rejected; see rationale §7.3.
 
 ### 7.4 Configuration: the three-way split
 
@@ -645,38 +536,26 @@ The configuration a forecasting engine needs splits three ways:
 | As-used record — what one run actually did | `runs.params` | resolved config snapshot, gap stats |
 
 **Hydration.** Adapters build engine-native configuration *from* the store at run time:
-series facts from the registry, the rest from the caller's engine config. One source of
-truth; if an engine config explicitly contradicts the registry, that is an error, not a
-silent preference. The caller's series bindings map engine roles to store series names
-(`{"target": "...", "radiation": "..."}`), resolved via `get_series_id()` at hydration —
-they double as the rename map between store series and the column names the engine
-expects.
+series facts from the registry, the rest from the caller's engine config. If an engine
+config explicitly contradicts the registry, that is an error, not a silent preference. The
+caller's series bindings map engine roles to store series names (`{"target": "...",
+"radiation": "..."}`), resolved via `get_series_id()` at hydration.
 
-**Job definitions in the store — deferred.** The middle row of the table has an obvious
-database home: a `forecast.jobs` table (engine, series bindings, horizon, quantiles,
-trigger spec, engine config) that would make the store a control plane — a standalone
-worker polls it, an orchestrator task becomes `run_job(job_id)`, an agent creates a
-pipeline by inserting a row, and job registration validates quantiles ⊆ band and series
-bindings before any run executes. That table is deliberately **not** part of the MVP: its
-only consumers (the Forecaster worker, data-arrival triggers, agent-managed pipelines) are
-later-stage, and in the MVP every job definition is caller-owned — the deployment
-example's settings object, a benchmark script's constants, an Airflow DAG's parameters.
-Runs therefore stand alone as the top of the provenance chain: `model`, `model_version`,
-and the `params` snapshot carry everything evaluation and monitoring need, and nothing
-downstream of `runs` changes when the jobs table arrives later as a new table.
+**Job definitions in the store are deferred past the MVP** — every job definition today is
+caller-owned, and runs stand alone as the top of the provenance chain. See rationale §7.4
+for the deferred `forecast.jobs` design.
 
 ### 7.5 Evaluation results
 
 Evaluation outputs are stored relationally so accuracy is queryable history rather than
-files. Two observations shape the design. First, an evaluation is itself a computation
-with provenance, so it gets a run table with an as-used snapshot, like forecasting.
-Second, an accuracy metric **is a time series**: of the coordinates that identify a value
-— which forecasts (`run_name`), which target (`series_id`), which as-of slice
-(`filtering`), which window (`win`), which quantile, which metric — every one is constant
-along the time axis; only the window position and the value vary. The store's own doctrine
-for that shape (§5.1) is identity in a small dimension table with a bigint surrogate,
-points in a narrow fact table (the series-table-plus-samples design proven by
-Prometheus-on-TimescaleDB). Shape to be validated during the spike; see §11.
+files. An accuracy metric **is a time series**: of the coordinates that identify a value —
+which forecasts (`run_name`), which target (`series_id`), which as-of slice (`filtering`),
+which window (`win`), which quantile, which metric — every one is constant along the time
+axis; only the window position and the value vary. The store's doctrine for that shape
+(§5.1) applies again: identity in a small dimension table with a bigint surrogate
+(`evaluation_series`), points in a narrow fact table (`evaluation_metrics`) — the
+series-table-plus-samples design proven by Prometheus-on-TimescaleDB. (Why a flat table
+was rejected: rationale §7.5.)
 
 ```sql
 -- One row per evaluation invocation: what was scored, how, against which data
@@ -713,64 +592,24 @@ CREATE TABLE forecast.evaluation_metrics (
 );
 ```
 
-**Why the dimension exists** (and why a flat labels-on-every-row table was rejected): the
-label tuple repeats identically for every window position of every run of the same
-monitor, and factoring it out roughly halves the fact heap and better than halves the
-index — savings that *grow* with history, since the dimension is fixed while `ts`
-positions accumulate forever. The dimension amortizes across re-runs too, because it is
-keyed by `run_name` rather than `eval_run_id` — a nightly drift monitor appends points to
-the same `eval_series_id` rows for years. That works because `filtering` and `win` are
-**relative specifications** (`D-1T06:00` is a per-delivery cutoff rule, `7D` a window
-size — never absolute moments), so the tuple is run-invariant by construction; what varies
-between runs is which `ts` positions exist to score, and that lives on the facts. A config
-change (new window, different gate closure) mints new series via get-or-create and the old
-ones simply stop receiving points — an honest discontinuity, since scores under different
-cutoffs aren't comparable anyway. At monitoring scale the fact table converts to a
-hypertable with `segmentby eval_series_id, orderby ts` — the canonical compression shape.
-Writers resolve ids get-or-create (same resolver pattern as `get_series_id`, §5.1), which
-also buys write-time integrity: a fact row cannot reference a grid cell that was never
-materialized as a dimension row.
+`evaluation_series` is keyed by `run_name`, not `eval_run_id`, so a nightly monitor appends
+to the same rows for years — this works because `filtering` and `win` are **relative
+specifications** (`D-1T06:00` is a per-delivery cutoff rule, `7D` a window size, never an
+absolute moment), so the tuple is run-invariant by construction. Writers resolve ids
+get-or-create (same resolver pattern as `get_series_id`, §5.1), canonicalizing the label
+before lookup so near-duplicate spellings can't mint duplicate series.
 
-**Labels are canonical strings, not structures.** The dimension's `filtering`, `win`, and
-`quantile` columns are identity labels; their only duties are uniqueness, grouping, and
-`WHERE`-clause legibility. The structured, machine-usable form of the evaluation config —
-the thing that actually builds cutoff predicates — lives in `evaluation_runs.params`.
-Labels use the types' standard serializations (`PT36H` is the ISO-8601 duration form,
-`D-1T06:00` the canonical as-of spec), and the resolver **canonicalizes before
-get-or-create** (parse → canonical format → lookup), so near-duplicate spellings
-(`D-1T6:00`) cannot mint duplicate series — the same bijective-formatter rule that governs
-quantile column names (§7.3). jsonb labels were considered and rejected: structural
-equality adds degrees of freedom to the duplicate problem (key order, optional fields)
-while making the dashboard predicate worse, and the structured form already exists in
-`params`. Reads speak labels through a generated view joining the
-dimension (§5.1 rule 3) — `WHERE metric = 'rMAE' AND win = '7D'` filters a tiny indexed
-table, then range-scans narrow facts.
-
-The run/series/points split also fixes three holes a single flat table would carry:
-
-- **The reproducibility pin had nowhere to live.** §9.2's frozen backtest hinges on the
-  `frozen_at` data pin — and in a flat metrics table that pin evaporates the moment the
-  query finishes. `evaluation_runs.params` is the as-used snapshot for evaluations, exactly
-  as `runs.params` is for forecasts. Re-execution needs nothing outside the run row:
-  `run_name` says what was scored, `params` says how (filterings, windows, quantiles,
-  providers, masks, period) and against which data (`frozen_at`, guarding every belief-log
-  read) — and given the pin, every read is deterministic because the points tables are
-  append-only with `recorded_at`.
-- **Re-evaluation is a new belief, not an overwrite.** Scoring the same `ts` again after
-  settlement revisions (revisioned actuals restate for weeks) is a new fact row under the same
-  `(eval_series_id, ts)` with the new `eval_run_id` — accuracy history is itself a belief
-  log, read by the same latest-belief `DISTINCT ON` as everything else, with `eval_run_id`
-  as the belief version.
-- **Round-tripping needs the config.** Reconstructing an evaluation report requires the
-  filterings and windows that produced it; `load_evaluation_output` reads them from
-  `evaluation_runs.params` rather than parsing directory names. Resume checks
-  (`has_evaluation_output`) are an indexed lookup on the small runs table.
-
-**Placement rule** (the generalization that keeps `target_time` off `forecast.runs`): what
-is constant across the *computation* — config, actuals pin, `recorded_at` — lives on the
-run; what is constant along the *series* — the label tuple — lives in the dimension; what
-varies point to point — `ts`, the belief version, the value — lives in the facts. One
-report ⇄ one run row; one label tuple ⇄ one dimension row, shared across runs.
+**Placement rule:** what is constant across the *computation* (config, actuals pin,
+`recorded_at`) lives on the run; what is constant along the *series* (the label tuple)
+lives in the dimension; what varies point to point (`ts`, the belief version, the value)
+lives in the facts. One report ⇄ one run row; one label tuple ⇄ one dimension row, shared
+across runs. This is also where the §9.2 reproducibility pin lives: `evaluation_runs.params`
+records `frozen_at`, so re-execution needs nothing outside the run row, and a
+re-evaluation after settlement revisions is a new fact row under the same
+`(eval_series_id, ts)` — accuracy history is itself a belief log, read by the same
+latest-belief `DISTINCT ON` as everything else, with `eval_run_id` as the belief version.
+(Full design rationale, including the three problems a flat table would have left
+unsolved: rationale §7.5.)
 
 Scheduled monitoring additionally materializes per-point errors into a `forecast_errors`
 hypertable, rolled up by generated continuous aggregates, so dashboards read rollups
@@ -780,64 +619,49 @@ instead of re-running vintage joins.
 
 ## 8. Integrity and enforcement
 
-The store depends on every point row referencing a registered series. The question is how
-that invariant is enforced, and the answer is shaped by a failure-mode asymmetry and by
-ingest mechanics.
+The store depends on every point row referencing a registered series. The identity design
+(§5.1) removes most of the risk before enforcement even enters — writers obtain ids
+through the strict resolver, so an unknown or typo'd name errors at insert time. What
+remains is a writer that invents or hardcodes a raw id, producing a point that is not
+merely unindexed but *uninterpretable* (no resolution, no role).
 
-**The failure being prevented.** A write attributed to the wrong series — or to no
-registered series at all — splits history and empties joins, discovered weeks later at
-read time. The identity design (§5.1) removes most of the surface before enforcement even
-enters: writers obtain ids through the strict resolver, so an unknown or typo'd name
-errors at insert time, and because ids are never reused, pre-resolved mappings in bulk
-pipelines cannot go stale. What remains is the writer that invents or hardcodes a raw id —
-and such an unregistered point is not merely unindexed; it is *uninterpretable* (no
-resolution, no role).
-
-**Why foreign keys are not the default.** Postgres FK checks run as per-row triggers
-(an SPI lookup taking `FOR KEY SHARE` on the referenced row) and never batch — a real tax
-on bulk ingest. At high write concurrency, shared locks on the same few `series` rows
-drive MultiXact growth, a known operational sharp edge. `NO ACTION` couples series
-lifecycle to chunk retention (a series row cannot be removed until every referencing chunk
-has aged out). And retrofitting means validating against a full, compressed hypertable.
-For a convention aimed at high-ingest time-series workloads, a default that degrades
-ingest is the wrong default.
+**Why foreign keys are not the default.** Postgres FK checks are per-row triggers that
+never batch — a real tax on bulk ingest — and at high write concurrency, shared locks on
+the same few `series` rows drive MultiXact growth. For a convention aimed at high-ingest
+time-series workloads, a default that degrades ingest is the wrong default. (Full
+argument: rationale §8.)
 
 **Default: `enforcement = "monitor"`.** Two layers, both on by default:
 
 1. The SDK resolves names to ids through a client-side registry cache — effectively free,
    and safe to cache because ids are never reused (§5.1) — **mandatory** on every write
-   path. SDK writers (the majority) get write-time prevention at zero database cost.
-   Auto-registration on first write is permitted **only from explicitly declared
+   path. Auto-registration on first write is permitted **only from explicitly declared
    metadata** (a dataset object that carries its resolution); bare frames error rather
-   than having a resolution inferred from index spacing, which would re-introduce the
-   silent-defaults failure. Races resolve inside `register_series()` via `ON CONFLICT`.
+   than having a resolution inferred from index spacing. Races resolve inside
+   `register_series()` via `ON CONFLICT`.
 2. An **orphan/grid sweep** ships with the TimescaleDB layer as a generated function,
-   `data_quality_sweep(scan_window)`: it scans the recent write window for ids absent
-   from the registry (the invented/hardcoded-id case), off-grid `target_time`
-   (`time_bucket` against the declared `sample_interval`; month-plus intervals have no
-   fixed stride and are skipped), and — where declared — `target_time_observed` outside
-   its target's bucket (§6.1). Scheduling is deployment-owned (cron, `add_job`); alerts
-   go through the standard hooks. Data quality is thereby the third alarm type beside model drift and
-   asset anomaly, on the same monitoring machinery. The same sweep can flag anomalous
-   `recorded_at − available_at` gaps — retro-stamped writes and unusually late arrivals —
-   and the measured lag distribution is what freshness alerting calibrates from, rather
-   than any declared value.
+   `data_quality_sweep(scan_window)`: it scans the recent write window for ids absent from
+   the registry, off-grid `target_time` (against the declared `sample_interval`), and —
+   where declared — `target_time_observed` outside its target's bucket (§6.1). Scheduling
+   is deployment-owned (cron, `add_job`); alerts go through the standard hooks. The same
+   sweep can flag anomalous `recorded_at − available_at` gaps — retro-stamped writes and
+   unusually late arrivals.
 
 Non-SDK writers (Spark jobs, dbt models, agents writing SQL) get the same write-time
 prevention in their own language: `get_series_id()` (strict) and `register_series()`
-(get-or-create) are plain SQL functions, so the convention is never hostage to the Python
-SDK; the sweep remains as the backstop for writers that bypass them with raw ids.
+(get-or-create) are plain SQL functions; the sweep remains as the backstop for writers
+that bypass them with raw ids.
 
 **Opt-in: `enforcement = "fk"`.** A deferrable FK (checks settle at commit, allowing
-points-then-registration in one transaction) remains documented for deployments where it
-is rational: low-volume forecast-only stores, regulated environments, dev/test.
+points-then-registration in one transaction), for deployments where it's rational:
+low-volume forecast-only stores, regulated environments, dev/test.
 
-**Opt-in: `append_only_guard`.** A generated `BEFORE UPDATE` trigger on revisioned
-points tables that always raises — structural enforcement of §4.1's first law for
-deployments that want it in schema rather than convention. It costs nothing on the write
-path (no legitimate path ever UPDATEs a points table) and is verified inert under
-compression, decompression, policy jobs, and DML over compressed chunks. Single-belief actuals
-carry their `belief_guard` (§6.1) unconditionally, which subsumes it.
+**Opt-in: `append_only_guard`.** A generated `BEFORE UPDATE` trigger on revisioned points
+tables that always raises — structural enforcement of §4.1's first law, for deployments
+that want it in schema rather than convention. It costs nothing on the write path (no
+legitimate path ever UPDATEs a points table) and is verified inert under compression,
+decompression, and DML over compressed chunks. Single-belief actuals carry their
+`belief_guard` (§6.1) unconditionally, which subsumes it.
 
 **Existing-table mode** (§6.1) is necessarily `monitor`: the store cannot and should not
 constrain a customer's pre-existing telemetry table.
@@ -865,29 +689,17 @@ ORDER  BY f.series_id, f.target_time, f.available_at DESC;
 ```
 
 Wrapped as the helper `forecast_asof(series, target_range, asof)`. With `asof = now()` it
-is "current best forecast" for serving; the generated `latest_<table>` view covers
-the hot dashboard path. **The same query against `predictors` (on `available_at`) is
+is "current best forecast" for serving; the generated `latest_<table>` view covers the hot
+dashboard path. **The same query against `predictors` (on `available_at`) is
 leakage-free feature assembly** — one query shape serves both serving and
 point-in-time-correct input selection.
 
-**Why `DISTINCT ON` rather than `last()`.** Over the mandated
-`(series_id, target_time, available_at DESC)` index, the planner has two good plans for
-this query and picks by cost. When revision depth is shallow (each target has a few
-vintages), the winner is a plain ordered index scan of the contiguous
-`(series, target-range)` slice with a Unique on top — sequential leaf reads, near-free.
-When revision streams are deep (an hourly re-forecaster leaves dozens of vintages per
-target), TimescaleDB's SkipScan node wins instead: one btree descent per (series, target)
-group, skipping the superseded vintages, with gains proportional to revision depth — and
-costs proportional to group count, so it is *not* automatically better; on a wide target
-range with shallow revisions the per-bucket descents lose to the sequential scan. The
-point for the convention is that `DISTINCT ON` leaves this choice to the planner —
-same SQL, same index, both regimes covered (and on plain Postgres it is simply the
-ordered scan). `last(col, available_at)` forecloses both: always a full aggregate scan
-with `GROUP BY` machinery and one call per column — eight redundant aggregate states to
-reconstruct a wide row `DISTINCT ON` returns whole. `last()` is instead the **required**
-form where `DISTINCT ON` is unavailable: under any `GROUP BY`, as in context assembly
-(§9.3) — and inside a continuous-aggregate definition, should a deployment materialize
-one (§11 records why the generator deliberately emits none).
+`DISTINCT ON` is used deliberately here rather than `last()`: over the mandated
+`(series_id, target_time, available_at DESC)` index, it lets the planner choose between a
+plain ordered scan (shallow revision depth) and TimescaleDB's SkipScan (deep revision
+depth) with the same SQL and the same index. `last()` forecloses both — it's the
+**required** form only where `DISTINCT ON` is unavailable: under a `GROUP BY`, as in
+context assembly (§9.3). Full comparison: rationale §9.1.
 
 ### 9.2 Evaluation join
 
@@ -923,124 +735,75 @@ GROUP  BY 1, 2;
 The two kinds of cutoff do different jobs and both are needed for a **frozen backtest**:
 the `available_at` cutoffs simulate what was knowable at each decision moment (domain
 clock), while the `recorded_at` pin freezes the dataset as the store held it at one chosen
-instant (system clock) — re-running with the same pin returns identical rows forever, no
-matter what arrived since. The pin must guard **every belief-log read in the query** —
-forecasts as well as actuals — because `available_at` is a writable claim on both:
-a backtest writing simulated vintages with past `available_at` into the same `run_name`
-would otherwise change an already-computed evaluation on re-run. The SDK captures one
-`frozen_at` at evaluation start, uses it for all reads, and records it in
-`evaluation_runs.params`. For live monitoring, set the pin to `now()` and the predicates
-are no-ops.
+instant (system clock) — re-running with the same pin returns identical rows forever. The
+pin must guard **every belief-log read in the query** — forecasts as well as actuals —
+because `available_at` is a writable claim on both. The SDK captures one `frozen_at` at
+evaluation start, uses it for all reads, and records it in `evaluation_runs.params`. For
+live monitoring, set the pin to `now()` and the predicates are no-ops.
 
-**Pin placement is the semantics.** Four placements of the same predicate answer four
-different questions. *Unpinned* (pin = `now()`): the store as it stands — the
-`available_at` cutoffs still prevent leakage, but late backfills and settled revisions
-are visible, so results legitimately improve as history does: the best current estimate
-of model skill. *Frozen* (one pin, stamped at experiment start, recorded in
-`evaluation_runs.params`): reproducible forever, per above. *Operational* (a rolling
-pin — `recorded_at <= S` per simulated origin S, alongside the `available_at <= S`
-cutoff): the `available_at` cutoff alone simulates what was *theoretically* knowable at
-S, but operational reality lags theory — data knowable at S may not reach the system
-until later — so the rolling pin scores the system *as it actually ingested*. The two
-clocks separate "how good is the model" from "how good is the model as operated"; over
-backfilled history the operational mode correctly degenerates (nothing was operationally
-present before its load date — fail loud, §6.1). *Forensic* (one pin at one decision's
-timestamp, a single read): reconstructs what the store held when the decision was made,
-separating a wrong model from inputs that were late or have since been revised.
+**Pin placement is the semantics** — four placements of the same predicate answer four
+different questions:
+
+| Placement | Pin | Answers |
+|---|---|---|
+| Unpinned | `now()` | Best current estimate of model skill — late backfills and settled revisions are visible, so results legitimately improve as history does. |
+| Frozen | One pin, stamped at experiment start, recorded in `evaluation_runs.params` | Reproducible forever — the standard backtest. |
+| Operational | A rolling pin (`recorded_at <= S` per simulated origin `S`, alongside `available_at <= S`) | How good the model was *as operated* — the `available_at` cutoff alone simulates what was theoretically knowable at `S`, but data knowable at `S` may not have reached the system until later. Over backfilled history this correctly degenerates: nothing was operationally present before its load date (fail loud, §6.1). |
+| Forensic | One pin at one decision's timestamp, a single read | Reconstructs what the store held when a specific decision was made — separates a wrong model from inputs that were late or have since been revised. |
 
 Per-quantile pinball-loss terms are enumerated per band column and **emitted by the
 generator** from the declared band, e.g.
 `avg(greatest(0.05*(ea.value-ef.q05), -0.95*(ea.value-ef.q05))) AS pinball_q05`; averaging
 across the band approximates CRPS. Cross-quantile metrics (coverage, sharpness, crossing
 checks) are plain row expressions — a structural benefit of the wide layout. Monitoring
-variants use a `LEFT JOIN` with a configurable arrival-lag guard to distinguish "actual not yet
-arrived" from "actual overdue for a realized period" (a data-quality alarm).
+variants use a `LEFT JOIN` with a configurable arrival-lag guard to distinguish "actual not
+yet arrived" from "actual overdue for a realized period" (a data-quality alarm).
 
 ### 9.3 Context assembly
 
 Model context windows must be one row per bucket, gaps explicit, ending at the last
 complete bucket. The SDK issues `time_bucket_gapfill` over the relevant belief log, with
-fill strategy per connector (`locf` for step-wise series, `interpolate` for smooth physical
-signals, NaN passthrough only for models that handle it) and a configurable gap budget
-(beyond N filled buckets: shorten the context or skip the run and alert). On revisioned
-sources, a `DISTINCT ON … ORDER BY available_at DESC` CTE runs first so gapfill
-regularizes the latest belief, not the revision stream — or, on TimescaleDB with buckets
-at the series' native resolution (one `target_time` per bucket), `last(value,
-available_at)` inside the gapfill aggregation (`locf(last(value, available_at))`)
-expresses latest-belief inline and collapses the two passes into one. The declared bounds become
-`context_start`/`context_end` on the run — the window declared is provably the window
-queried — and gap statistics land in `runs.params`.
+fill strategy per connector (`locf`, `interpolate`, or NaN passthrough) and a configurable
+gap budget. On revisioned sources, a `DISTINCT ON … ORDER BY available_at DESC` CTE runs
+first so gapfill regularizes the latest belief, not the revision stream — or, on
+TimescaleDB with buckets at the series' native resolution, `locf(last(value,
+available_at))` inside the gapfill aggregation expresses latest-belief inline and
+collapses the two passes into one. The declared bounds become `context_start`/`context_end`
+on the run, and gap statistics land in `runs.params`.
 
 **Store-served covariates complete the leakage audit.** An engine-fed frame can only bound
-the *target's* knowledge time (`context_end` derived from the last observed target value;
-covariate publication times are simply absent from a plain frame — see the OpenSTEF
-adapter's `context_end_method` provenance). When context assembly reads covariates from
-`predictors` instead, the as-of cutoff makes the read leakage-free *by construction* — a
-vintage published after the cutoff cannot be returned — and the SDK records that cutoff in
-`runs.params` (`covariates_asof`), so the audit covers both halves of the input: measured
-history via `context_end`, covariate vintages via the recorded cutoff.
+the *target's* knowledge time (`context_end`); covariate publication times are absent from
+a plain frame. When context assembly reads covariates from `predictors` instead, the
+as-of cutoff makes the read leakage-free *by construction*, and the SDK records that
+cutoff in `runs.params` (`covariates_asof`) — so the audit covers both halves of the
+input: measured history via `context_end`, covariate vintages via the recorded cutoff.
 
 ---
 
 ## 10. Validation: the OpenSTEF spike
 
-**The harness.** [OpenSTEF](https://github.com/OpenSTEF/openstef) (LF Energy) is the
-leading open-source short-term energy forecasting pipeline, production-proven across
-thousands of grid locations at the Dutch DSO Alliander, and its 4.x documentation is
-explicit that storage is the user's responsibility ("you own I/O"; the 3.x database layer
-has no 4.x equivalent). That makes it the ideal validation harness: an opinionated,
-production-proven pipeline *we do not control*, with a storage-shaped hole — if the
-convention backs it cleanly, the design generalizes beyond our own examples.
+The convention was validated against [OpenSTEF](https://github.com/OpenSTEF/openstef) (LF
+Energy's production short-term energy forecasting pipeline, deployed across thousands of
+grid locations at the Dutch DSO Alliander) — chosen because its 4.x architecture is
+bi-temporal in memory but has no storage layer of its own ("you own I/O"), making it a
+realistic, externally-controlled stress test.
 
-**What the review established.** OpenSTEF 4.x is bi-temporal *in memory* — its
-`(timestamp, available_at)` versioning and knowledge-cutoff machinery map one-to-one onto
-this convention's clocks — but it has **no bi-temporal layer at rest**, and production
-`predict()` output carries **no knowledge time at all** (vintage stamping exists only
-inside the backtest loop). Its public liander2024 benchmark exercises the convention
-hard: a 7-quantile band, weather shipped as versioned vintage histories, versioned
-measurements, and evaluation at a relative gate-closure cutoff (`D-1T06:00`) — the exact
-shape of §9.2.
+Adapters were built for every integration seam — production writes, store-served context
+assembly, and OpenSTEF's own benchmark harness — and live-tested against a TimescaleDB
+store on a real liander2024 wind park: 35,133 measurements with real per-row publication
+claims, 591k weather vintage rows, and a 7-day Chronos-2 benchmark run (28 simulated
+vintages, 8,092 forecast points) reproducing OpenSTEF's own evaluation exactly. Headline
+result: rCRPS 0.0906, rMAE@q50 0.1248, calibration near-nominal across the band — computed
+by a SQL query against `evaluation_series`/`evaluation_metrics`, i.e. §2's "accuracy as a
+queryable time series," literally.
 
-**What was built and validated (2026-08-25).** Adapters for every integration seam —
-the production write path (`ForecastStoreCallback`), store-served context assembly
-(`StoreReader`/`ForecastFeed`), and the benchmark harness
-(`TimescaleTargetProvider`/`TimescaleBenchmarkStorage`) — implemented and live-tested
-against a TimescaleDB store, every store provisioned through the generator per the
-dogfooding rule. Phase A verified real knowledge time (claim ≈ measurement; leakage audit
-passes; vintage isolation: a vintage published after the decision moment is invisible at
-it). Phase B ran openstef-beam's real `BenchmarkPipeline` with the store as its only
-source and sink, validated against an in-memory control: quantile points round-trip
-exactly, evaluation metrics round-trip losslessly, subset frames re-derive from stored
-artifacts and equal the originals, resume checks short-circuit as indexed queries, and
-simulated knowledge time landed in the same column production writes real time
-(`recorded_at > available_at` across all backtest runs — §4.3 in running code). The
-deferred seam (the `VersionedTimeSeriesDataset` pushdown repository) remains the
-upstream-contribution candidate.
+Key findings: OpenSTEF's production `predict()` output carries **no knowledge time at
+all** — the store's write path is the missing recorder; its backtest requires **writable
+knowledge time**, which SQL:2011 system time cannot serve (§4.3); and its own measurement
+feed independently validates revisioned actuals (real ~48-hour settlement lags) and the
+relative gate-closure cutoff this convention canonicalizes (§9.2).
 
-**The flag-plant run:** one liander2024 wind park ingested — 35,133 measurements carrying
-the dataset's **real per-row publication claims** and 591k weather vintage rows — then
-Amazon's Chronos-2 (BASE, ONNX) ran OpenSTEF's own benchmark wiring for 7 benchmark days:
-28 simulated vintages, 8,092 forecast points, **rCRPS 0.0906, rMAE@q50 0.1248**,
-calibration near-nominal across the band. The summary is a SQL query against
-`evaluation_series`/`evaluation_metrics` — §2's "accuracy as a queryable time series,"
-literally.
-
-**Findings** (each publishable independent of the integration):
-
-- The flagship open forecasting pipeline is **bi-temporal in RAM with no bi-temporal
-  layer at rest**; production forecasts leave it with **no knowledge time recorded** —
-  the store's write path is that recorder (demonstrated, not argued).
-- Its backtest requires **writable knowledge time** — SQL:2011 system time cannot serve
-  the workload; the same column now demonstrably holds real (production) and simulated
-  (backtest) claims, distinguished by `recorded_at`.
-- **Found validation for revisioned actuals:** the liander measurement feed itself publishes with
-  ~48-hour per-row settlement lags — revisioned, claim-bearing actuals are how real grid
-  data already arrives.
-- Its evaluation config independently uses the **relative gate-closure cutoff** this
-  convention canonicalizes.
-
-The adapter-level reference — attach points, type and configuration mappings, adapter
-lessons, packaging notes, and reproduction commands — lives in
+Full narrative, numbers, and the adapter-level reference: rationale §10 and
 [`integrations/openstef.md`](integrations/openstef.md).
 
 ---
@@ -1049,37 +812,28 @@ lessons, packaging notes, and reproduction commands — lives in
 
 | Status | Item |
 |---|---|
-| closed | Auxiliary per-point statistics from engines (e.g. OpenSTEF's optional `stdev`) — **not persisted.** The spike gathered the deciding evidence: `stdev` flows through backtest outputs and evaluation subsets but nothing downstream of the forecaster consumes it, so it is auxiliary, not a value column. Adapters record its presence in `runs.params` (`stdev_column_present`); reopen only if a consumer appears. |
-| closed | `evaluation_runs`/`evaluation_series`/`evaluation_metrics` shape — **validated.** The run's `params` snapshot captures enough to reconstruct derived evaluation subsets exactly (metrics round-trip losslessly; subsets re-derive from stored backtest output + ground truth), and the get-or-create dimension resolver held up under a real harness. Evidence: the OpenSTEF `EvaluationReport` round-trip ([integrations/openstef.md](integrations/openstef.md)). |
-| open | Multi-producer / composed forecasts — ensembles and hierarchical compositions where several producers forecast the same target (the general form of OpenSTEF's `{learner}__{quantile}` ensemble columns, which smuggle a producer dimension into column names). Candidate: one run per producer + one for the composition, with member `run_id`s recorded in the composition run's `params` — the run is already the store's producer dimension. Unexercised by the spike (single-model runs); decide when the first composed workflow is ported. |
+| closed | Auxiliary per-point statistics from engines (e.g. OpenSTEF's optional `stdev`) — **not persisted.** Nothing downstream of the forecaster consumes it; adapters record its presence in `runs.params` (`stdev_column_present`). Reopen only if a consumer appears. |
+| closed | `evaluation_runs`/`evaluation_series`/`evaluation_metrics` shape — **validated**: metrics round-trip losslessly, subsets re-derive from stored backtest output + ground truth. Evidence: the OpenSTEF `EvaluationReport` round-trip ([integrations/openstef.md](integrations/openstef.md)). |
+| open | Multi-producer / composed forecasts — ensembles and hierarchical compositions where several producers forecast the same target. Candidate: one run per producer + one for the composition, with member `run_id`s recorded in the composition run's `params`. Unexercised by the spike (single-model runs); decide when the first composed workflow is ported. |
 | open | Period-valued targets (delivery products as `tstzrange`) — unexercised by OpenSTEF's point grid; low priority. |
-| closed | Actuals unification — **resolved: columns unified; revisions are the PK switch** (2026-08-26). The old "tier" bundling (tier 1 = no claim column) conflated claims with revisions and made §4.2's own day-ahead-price example unstorable without revision machinery. Now both shapes carry the three clocks; `available_at` is the universal knowledge clock (the §9.2 special case is gone); single-belief writes are skip-or-raise via the generated `belief_guard` trigger (`ConflictingBelief`, never a silent swallow — live-verified inert under all TimescaleDB internals); revisioned idempotency is retcon-refusal by doctrine. Tier numbers retired the same day: declarations carry `revisions: bool` (`ActualsSpec(revisions=)`, `StoreConfig(actuals_revisions=)`), prose says single-belief / revisioned. Convention 0.4.0. |
+| closed | Actuals unification — **resolved: columns unified; revisions are the PK switch** (2026-08-26). Both shapes carry the three clocks; `available_at` is the universal knowledge clock; single-belief writes are skip-or-raise via the generated `belief_guard` trigger; revisioned idempotency is retcon-refusal by doctrine. Convention 0.4.0. Full history: rationale §11. |
 | open | Per-series revision-expectation contract — inside a shared revisioned table the sweep cannot tell an expected revision (settlement) from an incident (a publish-once feed restating); routing that alarm needs a per-series declaration (sketch: `series.metadata->'contract'->>'single_belief'`). Decide when the first publish-once external feed is ingested. |
-| open | TimescaleDB-required posture — direction set (2026-08-26): the convention will require TimescaleDB rather than treat it as an optional acceleration layer (the §8 sweep already standardizes on `time_bucket` and ships with the TimescaleDB layer; plain-Postgres stores get SDK write-path validation only). When this lands, sweep §1/§4.3's any-Postgres-14+ language. |
-| open | Continuous aggregates — **none generated yet; two sanctioned homes.** A cagg hard-codes the two questions every belief-log read must answer (`asof = now()`, no pin), so caggs serve only current-knowledge surfaces — of which two are real. (1) **Model-input downsampling**: models consume a fixed number of *timesteps* (TSFM checkpoints freeze `context_length`; history beyond it is truncated), so input resolution determines how much calendar the model sees — production forecasts read derived, coarser series (hourly load from 10-second telemetry), and over **single-belief** telemetry — prompt, in-order, revision-free, never written by backtests — a cagg is the right maintainer of the derived series' current-knowledge view, with the run recording the cagg watermark as read provenance. (Over a revisioned source, vintage-select *below* the aggregate — a hierarchical cagg whose first level is `last(value, available_at)` per point — or plain `avg` double-counts revised points; better, declare a revision-free source single-belief and let the PK make the one-level cagg exact.) A derived series is a first-class registry series declaring its source and aggregate — and it is not a third pattern: **derivation preserves epistemic status**, inheriting the weakest among its inputs (all inputs realized → `actuals`, a recomputation is a correction; any input pre-realization → `predictors`, a newer row re-derives from a newer vintage). Original observations are never discarded at ingest — a derivation is re-derivable only while its inputs survive — and their home depends on what alignment loses. **Snapping loses a timestamp**: the optional nullable `target_time_observed` column, specified in §6.1 — generator support (an `ActualsSpec` flag) arrives with the first jittered feed. **Aggregating loses a set**: N:1 derivations keep their inputs in an upstream raw table (often a pre-existing telemetry hypertable; §6.1 existing-table mode attaches it, `derived.source` makes the chain navigable) — raw streams as rows cannot satisfy the §4.1 grid contract. The raw table wants the trust rule too — `observed_at` the device's claim, `recorded_at` the witnessed arrival — and takes aggressive retention while the aligned series is kept. Backtests over the same inputs need knowledge-aware aggregates instead: aggregate inside the as-of read, or materialize the derived series as a revisioned belief log via a job (recomputation after late data = a revision; the aggregate of a belief log is itself a belief log). (2) **Evaluation rollups** (§7.5): a job materializes per-point residuals into `forecast_errors` — asof and gate answered once, at write time — and caggs roll those up for dashboards. What stays out: caggs directly over revision-bearing or forecast tables (aggregation across vintages is meaningless before vintage selection; late writes churn materialized ranges) and any pinned surface. Later, alongside whether materialized-only context reads are mandated or merely recorded. |
-| open | Connector band-mapping statistics (requested vs. interpolated quantiles) — one spec paragraph + `params` provenance flag. The OpenSTEF path sidesteps it (workflow configs request the band directly, and the adapter rejects off-band quantiles — verified); needed when the first interpolating connector (Chronos native quantiles outside a store's band) lands. |
-| open | `forecast.jobs` control-plane table — deliberately deferred past the MVP (§7.4): its only consumers (worker, data-arrival triggers, agent-managed pipelines) are later-stage, and job definitions are caller-owned until then. Arrives as a new table plus a nullable `runs.job_id` column; nothing downstream of `runs` changes. |
-| closed | Multi-instance roles — **shipped.** `StoreConfig.extra_tables` declares additional instances (`ForecastLogSpec` with its own band, `PredictorLogSpec`, `ActualsSpec` with its own PK shape); the generator emits each extra table identically to a canonical one (DDL, as-of index, serving view, `store_tables` declaration, columnstore) from one instance-plan source. Reads/writes take table names validated against the instance's own declaration; provisioning is additive (stored tables absent from a config are untouched; drift is checked per declared table). The workspace driver is realized: `TimescaleBenchmarkStorage(forecast_table=...)` keeps experiment artifacts out of production history. Live-verified additively on the provisioned store. |
-| closed | Chunk skipping — **removed** (2026-08-25). The generator briefly enabled knowledge-clock chunk skipping (early access, ≥ 2.16); dropped entirely after issues surfaced with the feature. Knowledge-clock predicates rely on `target_time` partition pruning plus orderby minmax sparse indexes; revisit if the feature matures to GA. |
-| open | Per-series expected arrival lag — deliberately cut from the MVP as a declared value. Arrival is *measured* everywhere (`recorded_at`), so if freshness alerting later needs an expectation, calibrate it from observed gaps (`recorded_at − available_at`) rather than declaring it. Revisit when monitoring ships. |
+| open | TimescaleDB-required posture — direction set (2026-08-26): the convention will require TimescaleDB rather than treat it as an optional acceleration layer. When this lands, revisit §1/§4.3's any-Postgres-14+ language. |
+| open | Continuous aggregates — **none generated yet; two sanctioned homes** (model-input downsampling over single-belief series; evaluation rollups), plus rules for what stays out (caggs over revision-bearing or forecast tables, and any pinned surface). Full design: rationale §11. |
+| open | Connector band-mapping statistics (requested vs. interpolated quantiles) — one spec paragraph + `params` provenance flag. The OpenSTEF path sidesteps it (workflow configs request the band directly); needed when the first interpolating connector lands. |
+| open | `forecast.jobs` control-plane table — deliberately deferred past the MVP (§7.4): its only consumers (worker, data-arrival triggers, agent-managed pipelines) are later-stage. Arrives as a new table plus a nullable `runs.job_id` column; nothing downstream of `runs` changes. |
+| closed | Multi-instance roles — **shipped.** `StoreConfig.extra_tables` declares additional instances; the generator emits each extra table identically to a canonical one from one instance-plan source. Live-verified additively on the provisioned store. |
+| closed | Chunk skipping — **removed** (2026-08-25) after issues surfaced with the early-access feature (≥ 2.16). Knowledge-clock predicates rely on `target_time` partition pruning plus orderby minmax sparse indexes; revisit if the feature matures to GA. |
+| open | Per-series expected arrival lag — deliberately cut from the MVP as a declared value. Arrival is *measured* everywhere (`recorded_at`); calibrate any future freshness alerting from observed gaps rather than declaring one. |
 
 Decisions already closed in this draft: quantile representation (wide, generative,
 band-in-metadata — §7.3); point/mean forecasts (`mean` column — §7.3); versioned inputs as
 a second belief-log instance (§6.2); uniform `available_at` vocabulary (§4.1); the metadata
 layer (§5); enforcement defaults (monitor-first, FK opt-in — §8); namespacing (dedicated
 `forecast` schema — §5); configuration split (registry / caller config / runs, with the
-in-store jobs table deferred past the MVP — §7.4); series
-identity (bigint surrogate + strict SQL resolver, names in the registry — §5.1); no
-`kind` column — a series is a quantity, tables are belief types about it, and read
-APIs take table names resolved against `store_tables` (§5.2); predictor
-point values as `value`, with the statistic in registry metadata (§6.2); the
-forecasts-vs-predictors decision test as provenance, not origin (§6.2).
-
----
-
-*Design review conducted against the openstef monorepo @ v4.3.1 (`openstef-core`
-datasets/types, `openstef-beam` benchmarking/evaluation, `openstef-models`
-presets/callbacks, the liander2024 benchmark, and the deployment examples).
-Implementation validated live 2026-08-25: 63-test suite against a Tiger Cloud TimescaleDB
-instance plus the liander2024 Chronos-2 benchmark run (§10), openstef packages installed
-from PyPI at 4.x.*
+in-store jobs table deferred past the MVP — §7.4); series identity (bigint surrogate +
+strict SQL resolver, names in the registry — §5.1); no `kind` column — a series is a
+quantity, tables are belief types about it, and read APIs take table names resolved
+against `store_tables` (§5.2); predictor point values as `value`, with the statistic in
+registry metadata (§6.2); the forecasts-vs-predictors decision test as provenance, not
+origin (§6.2).

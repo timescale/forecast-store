@@ -139,6 +139,8 @@ Moirai 2.0. Every number above is a row in the store's evaluation tables.
 
 - **The convention** — the spec this package generates:
   [`docs/forecast-store-convention.md`](docs/forecast-store-convention.md)
+- **Design rationale** — alternatives considered and worked examples, per rule:
+  [`docs/forecast-store-rationale.md`](docs/forecast-store-rationale.md)
 - **Tutorial** — OpenSTEF on TimescaleDB in six steps:
   [`docs/tutorials/openstef-on-timescaledb.md`](docs/tutorials/openstef-on-timescaledb.md)
 - **OpenSTEF adapter reference**:

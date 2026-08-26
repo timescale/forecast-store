@@ -1,0 +1,49 @@
+[project]
+name = "forecast-store"
+version = "0.0.1.dev0"
+description = "The forecast store: TimescaleDB/Postgres as the persistence, evaluation, and monitoring layer for any forecasting model."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+dependencies = [
+    "psycopg>=3.1",
+]
+
+[project.optional-dependencies]
+openstef = [
+    "openstef-core>=4.3",
+    "openstef-models[xgb-cpu]>=4.3",
+    "openstef-beam>=4.3",
+]
+foundation = [
+    "openstef-foundation-models[cpu]",
+    "pyyaml",
+]
+# TSFM benchmark baselines (heavy; benchmark harness only, not store code)
+timesfm = [
+    "timesfm[torch]>=2.0",
+]
+moirai = [
+    # uni2ts main pins numpy~=1.26 / torch<2.5 (incompatible with openstef-core);
+    # PR #256 relaxes them — unreviewed community branch, benchmark-baseline only.
+    "uni2ts @ git+https://github.com/chandragupta/uni2ts@feature/python-3.13-build",
+]
+dev = [
+    "pytest>=8",
+]
+
+[project.scripts]
+forecast-store = "forecast_store.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/forecast_store"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

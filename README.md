@@ -82,6 +82,40 @@ WHERE series_id = forecast.get_series_id('site42/load')
 ORDER BY target_time, available_at DESC;
 ```
 
+## OpenSTEF integration
+
+Adapters for every integration seam [OpenSTEF](https://github.com/OpenSTEF/openstef) 4.x
+exposes (`forecast_store.integrations`):
+
+| OpenSTEF seam | object | role |
+|---|---|---|
+| `ForecastingCallback` | `ForecastStoreCallback` | persists every `predict()` with its real `available_at` — the knowledge time OpenSTEF itself never records; run + points in one transaction |
+| context assembly | `StoreReader` (with `Observed` / `ForecastFeed` bindings) | model-ready datasets: measured history to the decision moment, covariates as-of it — leakage-free by construction, read provenance riding along as `store_context` |
+| `TargetProvider` | `TimescaleTargetProvider` | serves versioned measurements and predictor vintages to OpenSTEF's backtest engine, which applies its own knowledge cutoffs |
+| `BenchmarkStorage` | `TimescaleBenchmarkStorage` | backtest vintages (simulated `available_at`) and evaluation reports into the store; label-scoped overwrite, indexed resume checks, per-instance target tables |
+
+The production loop in miniature — context in as-of the decision moment, forecasts out
+with honest knowledge time:
+
+```python
+from forecast_store.integrations.openstef import ForecastStoreCallback, StoreReader
+from openstef_models.workflows.custom_forecasting_workflow import CustomForecastingWorkflow
+
+dataset = StoreReader(DSN).context(
+    target_series="site42/load",
+    covariates={"wind_speed_80m": "site42/wx/wind_speed_80m"},  # plain name = vendor feed
+    history_start=asof - timedelta(days=30), asof=asof, horizon_end=asof + timedelta(days=3),
+)
+workflow = CustomForecastingWorkflow(
+    model=model, model_id="site42",
+    callbacks=[ForecastStoreCallback(DSN, "site42/load")],
+)
+workflow.fit(dataset)
+workflow.predict(dataset)  # persisted: run + points, real available_at, one transaction
+```
+
+Details, mappings, and packaging notes: [`docs/integrations/openstef.md`](docs/integrations/openstef.md).
+
 ## Validated against a real pipeline
 
 The convention is validated end-to-end against

@@ -29,6 +29,19 @@ Two ideas carry the whole design:
 | `forecasts` | your models' output, with run provenance (`runs`) | re-predicts it |
 | `evaluation_*` | accuracy results | is a new evaluation |
 
+## The operational questions, answered
+
+| you ask | the store answers with |
+|---|---|
+| How good is the model? | a backtest that cuts `available_at <= S` — it *cannot* leak, because the query cannot return what wasn't knowable |
+| How good is the model *as operated*? | pin `recorded_at <= S` as well — scoring against what your system had actually ingested, delays included |
+| Can I reproduce last quarter's evaluation? | freeze `recorded_at` at experiment time; the same rows come back forever, whatever arrived since |
+| What did we know when that bid went wrong? | one as-of read at bid time — separating *the model was wrong* from *the inputs were late or later revised* |
+| Is the model drifting? | accuracy lives as rows in `evaluation_*`; drift is a `WHERE` clause and a dashboard, not a notebook |
+| Which vendor forecasts best at a 12-hour lead? | every superseded vintage stays scoreable — vendor skill by lead time is a query |
+| Did the feed deliver on time? | `recorded_at − available_at` is the *measured* delivery lag, per row |
+| Can I backfill years of history honestly? | state genuine per-row availability and backtests behave as if you'd ingested live; a claimless load fails loud, never quietly optimistic |
+
 ## Quickstart
 
 ```bash

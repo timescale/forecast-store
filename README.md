@@ -1,6 +1,6 @@
 # forecast-store
 
-**A forecast store is a bi-temporal store for forecasts** — and for the data
+**A forecast store is a tri-temporal store for forecasts** — and for the data
 they are made from and scored against. Producing a forecast has become nearly
 free; *operating* forecasts — keeping every vintage, guaranteeing
 point-in-time correctness, reproducing backtests, tracking accuracy, catching

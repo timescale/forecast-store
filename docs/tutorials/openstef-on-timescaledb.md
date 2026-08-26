@@ -4,7 +4,7 @@ Run [OpenSTEF](https://github.com/OpenSTEF/openstef) — LF Energy's production-
 short-term energy forecasting pipeline — with TimescaleDB as its storage layer. By the
 end of this tutorial you will have:
 
-1. provisioned a **forecast store** (a bi-temporal schema convention on Postgres/TimescaleDB),
+1. provisioned a **forecast store** (a tri-temporal schema convention on Postgres/TimescaleDB),
 2. ingested real Dutch grid data — 15-minute wind-park load measurements with their real
    ~48-hour publication lags, plus the full revision history of the weather forecasts,
 3. reproduced OpenSTEF's own Chronos-2 benchmark with the database as the *only* data

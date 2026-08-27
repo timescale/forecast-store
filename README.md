@@ -145,6 +145,8 @@ Moirai 2.0. Every number above is a row in the store's evaluation tables.
   [`docs/tutorials/openstef-on-timescaledb.md`](docs/tutorials/openstef-on-timescaledb.md)
 - **OpenSTEF adapter reference**:
   [`docs/integrations/openstef.md`](docs/integrations/openstef.md)
+- **Benchmark log** — every run, its results, and what's planned:
+  [`docs/benchmark_log.md`](docs/benchmark_log.md)
 
 ## Requirements and status
 

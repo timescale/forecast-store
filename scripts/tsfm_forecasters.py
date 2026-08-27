@@ -1,10 +1,14 @@
 """BacktestForecasterMixin wrappers for additional TSFM benchmark baselines.
 
-TimesFM 2.5 (google, 200M, torch): zero-shot, univariate. The decile quantile
-head yields the store-band subset {0.1, 0.3, 0.5, 0.7, 0.9}; q05/q95 are
-honestly absent, so its rCRPS is computed over a narrower band than
-Chronos-2's (disclosed alongside results). The model is loaded and compiled
-once and shared across targets, like the official Chronos-2 example.
+TimesFM 2.5 (google, 200M, torch): zero-shot; univariate by default, or
+covariate-fed via the package's XReg path (`forecast_with_covariates`): an
+in-context ridge regression on the covariates, TimesFM forecasting the
+residuals — the transformer stays univariate, covariates enter through a
+linear side-channel (unlike Chronos-2/Moirai, which attend over them). The
+decile quantile head yields the store-band subset {0.1, 0.3, 0.5, 0.7, 0.9};
+q05/q95 are honestly absent, so its rCRPS is computed over a narrower band
+than Chronos-2's (disclosed alongside results). The model is loaded and
+compiled once and shared across targets, like the official Chronos-2 example.
 
 Publication lag is handled by forecasting *through* the unobserved gap: the
 liander target publishes ~48h late, so at decision time S the context ends
@@ -37,8 +41,12 @@ CONTEXT_STEPS = 2048  # ~21 days of 15-minute history
 MAX_DECODE_STEPS = 512  # horizon + publication-lag gap headroom
 
 
-def load_timesfm():
-    """Load and compile TimesFM 2.5 once; the instance is shared per process."""
+def load_timesfm(for_covariates: bool = False):
+    """Load and compile TimesFM 2.5 once; the instance is shared per process.
+
+    The XReg path requires ``return_backcast=True`` at compile time; the
+    univariate path keeps the plain config.
+    """
     import timesfm
 
     model = timesfm.TimesFM_2p5_200M_torch.from_pretrained(
@@ -51,20 +59,31 @@ def load_timesfm():
             normalize_inputs=True,
             use_continuous_quantile_head=True,
             fix_quantile_crossing=True,
+            return_backcast=for_covariates,
         )
     )
     return model
 
 
 class TimesFMBacktestForecaster(BacktestForecasterMixin):
-    """Zero-shot TimesFM 2.5 under OpenSTEF's backtest/benchmark pipeline."""
+    """Zero-shot TimesFM 2.5 under OpenSTEF's backtest/benchmark pipeline.
+
+    ``covariates`` names known-future columns (weather-forecast vintages) fed
+    through the XReg side-channel; empty means plain univariate ``forecast()``.
+    """
 
     _LEVELS = (0.1, 0.3, 0.5, 0.7, 0.9)
     _HEAD_INDEX = {0.1: 1, 0.3: 3, 0.5: 5, 0.7: 7, 0.9: 9}  # index 0 is the mean
 
-    def __init__(self, model, target_column: str = "load") -> None:  # noqa: ANN001
+    def __init__(
+        self,
+        model,  # noqa: ANN001
+        target_column: str = "load",
+        covariates: tuple[str, ...] = (),
+    ) -> None:
         self._model = model
         self._target = target_column
+        self._covariates = covariates
         self._quantiles = [Q(level) for level in self._LEVELS]
         self.config = BacktestForecasterConfig(
             requires_training=False,  # zero-shot
@@ -110,30 +129,60 @@ class TimesFMBacktestForecaster(BacktestForecasterMixin):
         if decode_steps > MAX_DECODE_STEPS:
             return None  # context too stale to reach the horizon honestly
 
-        context = history.loc[:last_valid].ffill().dropna().to_numpy()
+        context = history.loc[:last_valid].ffill().dropna()
         if len(context) < 96:  # require at least a day of observed history
             return None
 
-        _point, quantile_out = self._model.forecast(
-            horizon=decode_steps, inputs=[context]
-        )
+        if self._covariates:
+            # Covariate sequences span context + decode window; the split into
+            # train/test halves inside forecast_with_covariates is by length.
+            future = data.get_window(
+                start=data.horizon,
+                end=data.horizon + SAMPLE_INTERVAL * HORIZON_STEPS,
+                available_before=data.horizon,
+            )
+            cov_grid = pd.date_range(
+                start=context.index[0],
+                periods=len(context) + decode_steps,
+                freq=SAMPLE_INTERVAL,
+            )
+            both = pd.concat([window.data, future.data]).sort_index()
+            both = both[~both.index.duplicated(keep="last")]
+            dynamic = {
+                col: [
+                    both[col].reindex(cov_grid).ffill().bfill().fillna(0.0)
+                    .to_numpy(np.float32)
+                    if col in both.columns else np.zeros(len(cov_grid), np.float32)
+                ]
+                for col in self._covariates
+            }
+            _point, quantile_out = self._model.forecast_with_covariates(
+                inputs=[context.to_numpy()],
+                dynamic_numerical_covariates=dynamic,
+                xreg_mode="xreg + timesfm",
+            )
+        else:
+            _point, quantile_out = self._model.forecast(
+                horizon=decode_steps, inputs=[context.to_numpy()]
+            )
+        q_out = np.asarray(quantile_out[0])  # (decode_steps, 10)
         tail = slice(gap_steps, gap_steps + HORIZON_STEPS)
         index = pd.DatetimeIndex(
             pd.date_range(data.horizon, periods=HORIZON_STEPS, freq=SAMPLE_INTERVAL),
             name="datetime",
         )
         frame = {
-            q.format(): quantile_out[0, tail, self._HEAD_INDEX[float(q)]]
+            q.format(): q_out[tail, self._HEAD_INDEX[float(q)]]
             for q in self._quantiles
         }
-        frame[self._target] = quantile_out[0, tail, self._HEAD_INDEX[0.5]]
+        frame[self._target] = q_out[tail, self._HEAD_INDEX[0.5]]
         return TimeSeriesDataset(
             data=pd.DataFrame(frame, index=index),
             sample_interval=SAMPLE_INTERVAL,
         )
 
 
-def load_moirai():
+def load_moirai(n_covariates: int = 3):
     """Load Moirai 2.0 R small once; quantile-native, covariate-capable.
 
     Installed from uni2ts PR #256's branch (main pins numpy~=1.26/torch<2.5,
@@ -147,7 +196,7 @@ def load_moirai():
         prediction_length=MAX_DECODE_STEPS,
         context_length=1024,
         target_dim=1,
-        feat_dynamic_real_dim=3,  # the official Chronos-2 example's covariates
+        feat_dynamic_real_dim=n_covariates,
         past_feat_dynamic_real_dim=0,
     )
     return forecast.create_predictor(batch_size=1)
@@ -166,9 +215,16 @@ class MoiraiBacktestForecaster(BacktestForecasterMixin):
     _COVARIATES = ("shortwave_radiation", "wind_speed_80m", "temperature_2m")
     _CONTEXT_STEPS = 1024
 
-    def __init__(self, predictor, target_column: str = "load") -> None:  # noqa: ANN001
+    def __init__(
+        self,
+        predictor,  # noqa: ANN001
+        target_column: str = "load",
+        covariates: tuple[str, ...] | None = None,
+    ) -> None:
         self._predictor = predictor
         self._target = target_column
+        # Must match the feat_dynamic_real_dim the predictor was built with.
+        self._covariates = self._COVARIATES if covariates is None else covariates
         self._quantiles = [Q(level) for level in self._LEVELS]
         self.config = BacktestForecasterConfig(
             requires_training=False,
@@ -235,7 +291,7 @@ class MoiraiBacktestForecaster(BacktestForecasterMixin):
         covariates = np.stack([
             both[col].reindex(cov_grid).ffill().bfill().fillna(0.0).to_numpy(np.float32)
             if col in both.columns else np.zeros(len(cov_grid), np.float32)
-            for col in self._COVARIATES
+            for col in self._covariates
         ])
 
         entry = {

@@ -6,6 +6,11 @@ Models (each mirroring OpenSTEF's own benchmark example for it exactly):
   inference, single process; the official example's three weather covariates)
 - ``xgboost`` / ``gblinear`` — OpenSTEF 4 preset models, trained in-backtest
   (weekly retrain; the full covariate set; parallel across targets)
+- ``timesfm`` (univariate) / ``timesfm-cov`` (3 covariates via XReg) /
+  ``timesfm-allwx`` (all 11) — zero-shot, decile band
+- ``moirai`` (3 covariates) / ``moirai-allwx`` (all 11) — zero-shot, decile band
+- ``chronos2-base-allwx`` — the base checkpoint fed all 11 weather covariates
+  (deviates from the official example's 3; isolates covariate access)
 
 The store is the only data source (TimescaleTargetProvider) and the only
 result sink (TimescaleBenchmarkStorage). Targets must be ingested first
@@ -38,11 +43,26 @@ from datetime import datetime, timedelta, timezone  # noqa: E402
 
 from ingest_liander import (  # noqa: E402  (also loads .env)
     CHRONOS_FEATURES,
+    WEATHER_COLUMNS,
     load_group_entries,
     series_names,
 )
 
-MODELS = ("chronos2-base", "chronos2-small", "xgboost", "gblinear", "timesfm", "moirai")
+MODELS = (
+    "chronos2-base",
+    "chronos2-small",
+    "xgboost",
+    "gblinear",
+    "timesfm",
+    "moirai",
+    # Covariate-access variants: -allwx feeds every weather column the store
+    # holds instead of the official example's three; timesfm-cov feeds the
+    # three through the XReg side-channel (the checkpoint itself is univariate).
+    "chronos2-base-allwx",
+    "timesfm-cov",
+    "timesfm-allwx",
+    "moirai-allwx",
+)
 CHRONOS_BATCH_SIZE = 16  # the official example's batched-inference setting
 
 # timesfm/moirai emit native deciles only; they write to a forecast-log
@@ -50,7 +70,9 @@ CHRONOS_BATCH_SIZE = 16  # the official example's batched-inference setting
 # canonical reason to split instances), not to the 7-level canonical table.
 DECILE_TABLE = "forecasts_deciles"
 DECILE_BAND = ("0.1", "0.3", "0.5", "0.7", "0.9")
-DECILE_MODELS = frozenset({"timesfm", "moirai"})
+DECILE_MODELS = frozenset(
+    {"timesfm", "timesfm-cov", "timesfm-allwx", "moirai", "moirai-allwx"}
+)
 
 
 def build_forecaster_factory(model: str, cache_dir: Path, quantiles, horizons):
@@ -66,7 +88,9 @@ def build_forecaster_factory(model: str, cache_dir: Path, quantiles, horizons):
         )
         from openstef_models.utils.feature_selection import Include
 
-        size = Chronos2.BASE if model.endswith("base") else Chronos2.SMALL
+        base_name = model.removesuffix("-allwx")
+        features = WEATHER_COLUMNS if model.endswith("-allwx") else CHRONOS_FEATURES
+        size = Chronos2.BASE if base_name.endswith("base") else Chronos2.SMALL
         # DYNAMIC, not recommended(): the static-shape variant (macOS/CoreML)
         # freezes the batch dimension and rejects batched backtest inference.
         workflow = create_forecasting_workflow(
@@ -76,7 +100,7 @@ def build_forecaster_factory(model: str, cache_dir: Path, quantiles, horizons):
                 quantiles=quantiles,
                 horizons=horizons,
                 target_column="load",
-                selected_features=Include("load", *CHRONOS_FEATURES),
+                selected_features=Include("load", *features),
             )
         )
 
@@ -88,27 +112,36 @@ def build_forecaster_factory(model: str, cache_dir: Path, quantiles, horizons):
         # A live ONNX session cannot be shared across worker processes.
         return factory, 1
 
-    if model == "timesfm":
-        # Zero-shot, univariate, decile quantile head (band subset 0.1..0.9);
-        # requires `--extra timesfm`. One shared compiled model per process.
+    if model.startswith("timesfm"):
+        # Zero-shot, decile quantile head (band subset 0.1..0.9); requires
+        # `--extra timesfm`. One shared compiled model per process. Variants:
+        # bare = univariate; -cov = the official 3 covariates via XReg;
+        # -allwx = every weather column via XReg.
         from tsfm_forecasters import TimesFMBacktestForecaster, load_timesfm
 
-        shared = load_timesfm()
+        covariates = {
+            "timesfm": (),
+            "timesfm-cov": CHRONOS_FEATURES,
+            "timesfm-allwx": WEATHER_COLUMNS,
+        }[model]
+        shared = load_timesfm(for_covariates=bool(covariates))
 
         def factory(_context, _target):  # noqa: ANN001
-            return TimesFMBacktestForecaster(shared)
+            return TimesFMBacktestForecaster(shared, covariates=covariates)
 
         return factory, 1
 
-    if model == "moirai":
-        # Zero-shot with the official three weather covariates; decile band
-        # subset like timesfm. Requires `--extra moirai` (uni2ts PR-256 branch).
+    if model.startswith("moirai"):
+        # Zero-shot; decile band subset like timesfm. Requires `--extra moirai`
+        # (uni2ts PR-256 branch). Bare = the official three weather covariates;
+        # -allwx = every weather column (native any-variate attention).
         from tsfm_forecasters import MoiraiBacktestForecaster, load_moirai
 
-        shared = load_moirai()
+        covariates = WEATHER_COLUMNS if model.endswith("-allwx") else CHRONOS_FEATURES
+        shared = load_moirai(n_covariates=len(covariates))
 
         def factory(_context, _target):  # noqa: ANN001
-            return MoiraiBacktestForecaster(shared)
+            return MoiraiBacktestForecaster(shared, covariates=covariates)
 
         return factory, 1
 

@@ -23,8 +23,10 @@ The normative contract is `docs/forecast-store-convention.md`; per-rule reasonin
 
 ## Two rules generate everything
 
-**Rule 1 — every row carries three clocks.** Three timestamp columns, on every table,
-answering three different questions:
+**Rule 1 — every row carries three clocks.** Forecast data is **tri-temporal**:
+bi-temporal modeling (valid time + transaction time, per SQL:2011) is not enough,
+because *when the source knew it* is a third, independent time. Three timestamp
+columns, on every table, answering three different questions:
 
 | Column | Question it answers | Who sets it |
 |---|---|---|
@@ -78,8 +80,8 @@ and points tables have to exist first.
 Plan one registry entry per *quantity* (site 42's load, site 42's irradiance, the FR
 day-ahead price). For each, decide:
 
-- **Name** — an immutable machine slug (`site42_load`); human naming goes in
-  `description`.
+- **Name** — an immutable machine identifier, conventionally a slash path
+  (`site42/load`, `site42/wx/wind_speed_80m`); human naming goes in `description`.
 - **Grid** — the `sample_interval`. Every `target_time` for the series must be a bucket
   boundary at this resolution: a timestamp here *names an interval*, not a point ("the
   load at 18:00" means "average power over [18:00, 18:15)"). Exact alignment makes "the
@@ -184,11 +186,11 @@ The registry now exists. Register every series from step 1 — always through th
 resolver functions, never a raw INSERT into `forecast.series`:
 
 ```sql
-SELECT forecast.register_series('site42_load', interval '15 minutes');  -- get-or-create
-SELECT forecast.get_series_id('site42_load');  -- strict: raises on unknown names
+SELECT forecast.register_series('site42/load', interval '15 minutes');  -- get-or-create
+SELECT forecast.get_series_id('site42/load');  -- strict: raises on unknown names
 ```
 
-Use `get_series_id()` inside every write (`VALUES (forecast.get_series_id('site42_load'), ...)`)
+Use `get_series_id()` inside every write (`VALUES (forecast.get_series_id('site42/load'), ...)`)
 so a typo'd series name fails loudly at insert time instead of landing as an orphan id.
 
 ### 7. Write data: each table's `available_at` contract
@@ -223,7 +225,7 @@ inside a backtest is leakage:
 ```sql
 SELECT DISTINCT ON (target_time) target_time, available_at, q50
 FROM forecast.forecasts
-WHERE series_id = forecast.get_series_id('site42_load')
+WHERE series_id = forecast.get_series_id('site42/load')
   AND target_time BETWEEN :t0 AND :t1
   AND available_at <= :asof            -- the knowledge cutoff
 ORDER BY target_time, available_at DESC;

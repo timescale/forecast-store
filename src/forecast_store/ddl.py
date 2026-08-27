@@ -325,50 +325,66 @@ FOR EACH ROW EXECUTE FUNCTION {s}.append_only_guard()"""
 
 
 def _sweep_fn(config: StoreConfig) -> str:
-    """The §8 orphan/grid sweep, generated per store as a SQL function.
+    """The §8 orphan/grid sweep — catalog-driven, so it never regenerates.
 
-    Monitor-first enforcement's backstop: per points instance it reports
-    series ids absent from the registry (recent write window), off-grid
-    ``target_time`` (``time_bucket`` against the registry's declared
+    Monitor-first enforcement's backstop: for every points instance *declared
+    in* ``store_tables`` (and actually present — dropped tables are skipped)
+    it reports series ids absent from the registry (recent write window),
+    off-grid ``target_time`` (``time_bucket`` against the registry's declared
     ``sample_interval``; intervals of a month or longer are skipped — no fixed
-    stride), and — where declared — ``target_time_observed`` outside its
-    target's bucket. Uses ``time_bucket``, so it ships with the TimescaleDB
-    layer (``hypertable_ddl``), not the engine-neutral DDL. Scheduling is
+    stride), and — where the declaration says so — ``target_time_observed``
+    outside its target's bucket.
+
+    Iterating the catalog instead of baking table names in means an instance
+    added later (with the library or by hand, as long as it declares itself)
+    is swept from the moment its ``store_tables`` row exists — a statically
+    generated sweep would silently not monitor it. Executes ``time_bucket``,
+    so it ships with the TimescaleDB layer (``hypertable_ddl``); scheduling is
     deployment-owned (cron, ``add_job``).
     """
     s = config.schema
-    parts: list[str] = []
-    for inst in _instances(config):
-        name = inst["name"]
-        parts.append(f"""\
-    SELECT 'orphan_series'::text, '{name}'::text, p.series_id, count(*)
-    FROM {s}.{name} p LEFT JOIN {s}.series sr USING (series_id)
-    WHERE p.recorded_at > now() - scan_window AND sr.series_id IS NULL
-    GROUP BY p.series_id""")
-        parts.append(f"""\
-    SELECT 'off_grid_target_time', '{name}', p.series_id, count(*)
-    FROM {s}.{name} p JOIN {s}.series sr USING (series_id)
-    WHERE p.recorded_at > now() - scan_window
-      AND sr.sample_interval > interval '0'
-      AND sr.sample_interval < interval '28 days'
-      AND time_bucket(sr.sample_interval, p.target_time) <> p.target_time
-    GROUP BY p.series_id""")
-        if inst.get("observed"):
-            parts.append(f"""\
-    SELECT 'observed_outside_bucket', '{name}', p.series_id, count(*)
-    FROM {s}.{name} p JOIN {s}.series sr USING (series_id)
-    WHERE p.recorded_at > now() - scan_window
-      AND p.target_time_observed IS NOT NULL
-      AND (p.target_time_observed < p.target_time
-           OR p.target_time_observed >= p.target_time + sr.sample_interval)
-    GROUP BY p.series_id""")
-    body = "\n    UNION ALL\n".join(parts)
     return f"""\
 CREATE OR REPLACE FUNCTION {s}.data_quality_sweep(scan_window interval DEFAULT '2 days')
 RETURNS TABLE(issue text, table_name text, series_id bigint, n bigint)
-LANGUAGE sql STABLE AS $$
-{body}
-$$"""
+LANGUAGE plpgsql STABLE AS $fn$
+DECLARE
+    t record;
+BEGIN
+    FOR t IN
+        SELECT st.table_name AS name,
+               coalesce((st.config->>'has_target_time_observed')::boolean, false)
+                   AS observed
+        FROM {s}.store_tables st
+        WHERE st.config->>'role' IN ('actuals', 'predictors', 'own_forecasts')
+          AND to_regclass(format('{s}.%I', st.table_name)) IS NOT NULL
+        ORDER BY st.table_name
+    LOOP
+        RETURN QUERY EXECUTE format($q$
+            SELECT 'orphan_series'::text, %L::text, p.series_id, count(*)
+            FROM {s}.%I p LEFT JOIN {s}.series sr USING (series_id)
+            WHERE p.recorded_at > now() - $1 AND sr.series_id IS NULL
+            GROUP BY p.series_id$q$, t.name, t.name) USING scan_window;
+        RETURN QUERY EXECUTE format($q$
+            SELECT 'off_grid_target_time'::text, %L::text, p.series_id, count(*)
+            FROM {s}.%I p JOIN {s}.series sr USING (series_id)
+            WHERE p.recorded_at > now() - $1
+              AND sr.sample_interval > interval '0'
+              AND sr.sample_interval < interval '28 days'
+              AND time_bucket(sr.sample_interval, p.target_time) <> p.target_time
+            GROUP BY p.series_id$q$, t.name, t.name) USING scan_window;
+        IF t.observed THEN
+            RETURN QUERY EXECUTE format($q$
+                SELECT 'observed_outside_bucket'::text, %L::text, p.series_id, count(*)
+                FROM {s}.%I p JOIN {s}.series sr USING (series_id)
+                WHERE p.recorded_at > now() - $1
+                  AND p.target_time_observed IS NOT NULL
+                  AND (p.target_time_observed < p.target_time
+                       OR p.target_time_observed >= p.target_time + sr.sample_interval)
+                GROUP BY p.series_id$q$, t.name, t.name) USING scan_window;
+        END IF;
+    END LOOP;
+END
+$fn$"""
 
 
 def table_configs(config: StoreConfig) -> dict[str, dict[str, object]]:
@@ -402,27 +418,39 @@ def table_configs(config: StoreConfig) -> dict[str, dict[str, object]]:
             if inst.get("observed"):
                 declaration["has_target_time_observed"] = True
         configs[inst["name"]] = declaration
-    configs["evaluation_runs"] = {"role": "evaluation"}
-    configs["evaluation_series"] = {"role": "evaluation"}
-    configs["evaluation_metrics"] = {"role": "evaluation"}
+    configs.update(_evaluation_configs())
     return configs
 
 
-def _seed_store_tables(config: StoreConfig) -> str:
-    s = config.schema
+def _evaluation_configs() -> dict[str, dict[str, object]]:
+    return {
+        "evaluation_runs": {"role": "evaluation"},
+        "evaluation_series": {"role": "evaluation"},
+        "evaluation_metrics": {"role": "evaluation"},
+    }
+
+
+def _seed_rows(schema: str, configs: dict[str, dict[str, object]]) -> str:
     rows = ",\n".join(
         f"    ('{table}', '{CONVENTION_VERSION}', '{json.dumps(cfg, sort_keys=True)}'::jsonb)"
-        for table, cfg in table_configs(config).items()
+        for table, cfg in configs.items()
     )
     return f"""\
-INSERT INTO {s}.store_tables (table_name, convention_version, config)
+INSERT INTO {schema}.store_tables (table_name, convention_version, config)
 VALUES
 {rows}
 ON CONFLICT (table_name) DO NOTHING"""
 
 
-def generate_ddl(config: StoreConfig) -> list[str]:
-    """All provisioning statements, in execution order. Plain Postgres 14+."""
+def catalog_ddl(config: StoreConfig) -> list[str]:
+    """The decision-invariant layer, in execution order. Plain Postgres 14+.
+
+    Registry, self-description catalog, resolvers, run provenance, evaluation
+    tables, and the guard *functions* (trigger attachment is a per-table
+    decision and lives in :func:`points_ddl`). Nothing here changes when the
+    steps-2-to-5 design decisions (spec §6-§7) change: bands, PK switches, and
+    extra instances only ever touch the points layer.
+    """
     s = config.schema
     stmts = [
         f"CREATE SCHEMA IF NOT EXISTS {s}",
@@ -431,28 +459,58 @@ def generate_ddl(config: StoreConfig) -> list[str]:
         _get_series_id_fn(s),
         _register_series_fn(s),
         _runs_table(s),
+        *_evaluation_tables(s),
+        _belief_guard_fn(s),
     ]
-    for inst in _instances(config):
-        stmts.append(_points_table(s, inst))
-        if inst["shape"] == "forecast":
-            stmts.append(_asof_index(s, inst["name"]))
-            stmts.append(_latest_view(s, inst))
-    stmts += _evaluation_tables(s)
-    stmts.append(_belief_guard_fn(s))
-    for inst in _instances(config):
-        if inst["shape"] == "actuals" and not inst["revisions"]:
-            stmts.append(_belief_guard_trigger(s, inst["name"]))
     if config.append_only_guard:
         stmts.append(_append_only_guard_fn(s))
-        for inst in _instances(config):
-            if inst["shape"] != "actuals" or inst["revisions"]:
-                stmts.append(_append_only_guard_trigger(s, inst["name"]))
-    stmts.append(_seed_store_tables(config))
+    stmts.append(_seed_rows(s, _evaluation_configs()))
     return stmts
 
 
-def hypertable_ddl(config: StoreConfig) -> list[str]:
-    """TimescaleDB enhancements; skipped on plain Postgres.
+def points_ddl(config: StoreConfig) -> list[str]:
+    """The decision-derived layer: one self-contained block per instance.
+
+    Each block is a points table with everything it owns — index, serving
+    view, guard triggers, and its own ``store_tables`` declaration row — so an
+    instance can be added to a provisioned store by executing its block alone
+    (the catalog, including the catalog-driven sweep, picks it up from the
+    declaration).
+    """
+    s = config.schema
+    declarations = table_configs(config)
+    stmts: list[str] = []
+    for inst in _instances(config):
+        name = inst["name"]
+        stmts.append(_points_table(s, inst))
+        if inst["shape"] == "forecast":
+            stmts.append(_asof_index(s, name))
+            stmts.append(_latest_view(s, inst))
+        if inst["shape"] == "actuals" and not inst["revisions"]:
+            stmts.append(_belief_guard_trigger(s, name))
+        if config.append_only_guard and (inst["shape"] != "actuals" or inst["revisions"]):
+            stmts.append(_append_only_guard_trigger(s, name))
+        stmts.append(_seed_rows(s, {name: declarations[name]}))
+    return stmts
+
+
+def generate_ddl(config: StoreConfig) -> list[str]:
+    """All provisioning statements, in execution order (catalog first).
+    Plain Postgres 14+."""
+    return catalog_ddl(config) + points_ddl(config)
+
+
+def catalog_hypertable_ddl(config: StoreConfig) -> list[str]:
+    """The TimescaleDB half of the catalog layer: the catalog-driven sweep.
+
+    Lives here rather than in :func:`catalog_ddl` because executing it needs
+    ``time_bucket`` — on plain Postgres it would fail at first call.
+    """
+    return [_sweep_fn(config)]
+
+
+def points_hypertable_ddl(config: StoreConfig) -> list[str]:
+    """Per-instance TimescaleDB enhancements; skipped on plain Postgres.
 
     Columnstore per pg-aiguide's hypertable guidance: segmentby the primary
     filter (series_id — high row density per chunk), orderby forming a natural
@@ -473,7 +531,9 @@ def hypertable_ddl(config: StoreConfig) -> list[str]:
             f"CALL add_columnstore_policy('{s}.{inst['name']}', after => INTERVAL '7 days', "
             "if_not_exists => true)",
         ]
-    # time_bucket-based, so it lives here: a SQL function body is validated at
-    # CREATE, and this one must not fail plain-Postgres provisioning.
-    statements.append(_sweep_fn(config))
     return statements
+
+
+def hypertable_ddl(config: StoreConfig) -> list[str]:
+    """TimescaleDB enhancements; skipped on plain Postgres."""
+    return points_hypertable_ddl(config) + catalog_hypertable_ddl(config)

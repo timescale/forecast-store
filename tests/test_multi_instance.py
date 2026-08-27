@@ -177,9 +177,13 @@ def test_observed_actuals_instance():
     assert declarations["sensor_a"]["has_target_time_observed"] is True
     # Only-when-true: canonical actuals declaration is unchanged (drift-free).
     assert "has_target_time_observed" not in declarations["actuals"]
+    # The sweep is catalog-driven: it never names instances — the stored
+    # declaration (has_target_time_observed) gates the observed check at run
+    # time, so provisioning the instance is all it takes to be swept.
     sweep = next(s for s in hypertable_ddl(config) if "data_quality_sweep" in s)
     assert "observed_outside_bucket" in sweep
-    assert "sensor_a" in sweep
+    assert "sensor_a" not in sweep
+    assert "has_target_time_observed" in sweep
 
 
 @pytest.mark.skipif(not DSN, reason="FORECAST_STORE_TEST_DSN not set")
@@ -194,7 +198,7 @@ def test_observed_instance_and_grid_validation_live():
     config = StoreConfig(
         extra_tables=(ActualsSpec("obs_smoke", has_target_time_observed=True),)
     )
-    provision(DSN, config)  # additive; also regenerates the sweep function
+    provision(DSN, config)  # additive; the catalog-driven sweep needs no regeneration
 
     t0 = datetime(2024, 9, 1, tzinfo=timezone.utc)
     jitter = timedelta(seconds=3, milliseconds=200)
@@ -257,7 +261,8 @@ def test_observed_instance_and_grid_validation_live():
                 cur.execute("DELETE FROM forecast.store_tables WHERE table_name = 'obs_smoke'")
                 cur.execute("DELETE FROM forecast.series WHERE name = 'obs_smoke_series'")
             conn.commit()
-    provision(DSN, StoreConfig())  # restore the canonical sweep (no obs_smoke reference)
+    # No restore needed: the catalog-driven sweep forgets obs_smoke the moment
+    # its store_tables row is deleted above — that is the point of the design.
 
 
 @pytest.mark.skipif(not DSN, reason="FORECAST_STORE_TEST_DSN not set")

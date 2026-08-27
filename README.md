@@ -131,9 +131,14 @@ Full official window, 5 wind parks × 306 days, identical store-served data:
 | Chronos-2 small (zero-shot) | 0.0739 | 0.1036 |
 | XGBoost (weekly retrain) | 0.0946 | 0.1107 |
 | GBLinear (weekly retrain) | 0.0947 | 0.1312 |
+| Moirai 2.0 R small (zero-shot)\* | 0.1421 | 0.1856 |
+| TimesFM 2.5 (zero-shot, univariate)\* | 0.1437 | 0.1928 |
 
-The harness (`scripts/run_liander_benchmark.py`) also wraps TimesFM 2.5 and
-Moirai 2.0. Every number above is a row in the store's evaluation tables.
+\* Decile-native models: scored over their own 5-level band (a separate
+forecast-log instance whose declared band is true), so their rCRPS spans a
+narrower band than the others'. Every number above is a row in the store's
+evaluation tables; the full record — per-park results, run labels, and the
+planned runs — is [`docs/benchmark_log.md`](docs/benchmark_log.md).
 
 ## Documentation
 

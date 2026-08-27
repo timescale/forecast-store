@@ -16,8 +16,11 @@ made from and scored against. Two rules generate everything below:
 2. **It is a log of beliefs, not a table of values.** Tables are append-only; a
    revision or a new forecast vintage is a new row, never an UPDATE.
 
-Full DDL to apply: [references/canonical-ddl.sql](references/canonical-ddl.sql)
-(generated; includes the TimescaleDB hypertable/columnstore layer). The
+DDL to apply (both generated, both with the TimescaleDB layer):
+[references/catalog-ddl.sql](references/catalog-ddl.sql) — the
+decision-invariant machinery, pasted once per store — and
+[references/points-tables.sql](references/points-tables.sql) — one
+self-contained block per stream your design produces (step 6). The
 normative contract is `docs/forecast-store-convention.md`; reasoning per rule is
 `docs/forecast-store-rationale.md`. A Python generator/SDK exists
 (`pip install forecast-store`) but nothing below requires it.
@@ -95,15 +98,33 @@ in another instance's band. Every instance self-declares in
 `forecast.store_tables` (columns, knowledge clock, band, role), so any client
 can reconstruct the store's shape from the store alone.
 
-### 6. Apply the DDL
+### 6. Apply the DDL: catalog once, then one block per stream
 
-Run [references/canonical-ddl.sql](references/canonical-ddl.sql). On
-TimescaleDB it includes hypertables, columnstore (segmentby `series_id`,
-orderby the two clocks — the minmax sparse indexes are exactly the as-of
-predicates), and a generated `data_quality_sweep(scan_window)` function
-(orphan ids, off-grid `target_time`; schedule it with cron or `add_job`).
-Integrity is monitor-first: no FKs on points tables (per-row write tax);
-the strict resolver + the sweep cover it.
+The DDL splits along the design's own boundary:
+
+- **[references/catalog-ddl.sql](references/catalog-ddl.sql)** — the
+  decision-invariant layer; paste once per store, first. Registry + strict
+  resolvers, the `store_tables` self-description catalog, run provenance,
+  evaluation tables, guard functions, and `data_quality_sweep(scan_window)`
+  (orphan ids, off-grid `target_time`, out-of-bucket observations; schedule
+  with cron or `add_job`). The sweep is catalog-driven — it discovers points
+  tables from their `store_tables` declarations at execution time — so
+  nothing your steps 2–5 decide ever changes this file.
+- **[references/points-tables.sql](references/points-tables.sql)** — one
+  self-contained block per stream you classified: the table, its
+  index/view/triggers, its own `store_tables` declaration row, and its
+  TimescaleDB layer (hypertable + columnstore: segmentby `series_id`,
+  orderby the two clocks — the minmax sparse indexes are exactly the as-of
+  predicates). The default three blocks are the common case; the variant
+  blocks are the step-3 single-belief actuals and a step-5 second
+  forecast-log instance with its own band — derive further instances the
+  same way, columns from the band by the bijection.
+
+Because every block carries its declaration row, adding an instance to a
+provisioned store = executing its block: the sweep and any catalog-reading
+client pick it up immediately, no regeneration. Integrity is monitor-first:
+no FKs on points tables (per-row write tax); the strict resolver + the
+sweep cover it.
 
 ## Canonical queries
 

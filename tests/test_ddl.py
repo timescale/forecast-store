@@ -71,10 +71,11 @@ def test_series_name_collates_c(config):
 
 
 def test_seed_declares_band_and_version(config):
-    seed = generate_ddl(config)[-1]
-    assert CONVENTION_VERSION in seed
+    seeds = [s for s in generate_ddl(config) if "INSERT INTO forecast.store_tables" in s]
+    assert all(CONVENTION_VERSION in seed for seed in seeds)
     band_json = json.dumps([str(q) for q in LIANDER_BAND])[1:-1]  # elements only
-    assert band_json in seed
+    forecasts_seed = stmt_for(seeds, "('forecasts',")
+    assert band_json in forecasts_seed
 
 
 def test_table_configs_cover_all_seeded_tables(config):
@@ -186,15 +187,48 @@ def test_invalid_configs_rejected():
 
 
 def test_sweep_function_generated(config):
-    # time_bucket-based, so it ships with the TimescaleDB layer — never the
-    # engine-neutral DDL (a SQL function body is validated at CREATE).
+    # Executes time_bucket, so it ships with the TimescaleDB layer — never the
+    # engine-neutral DDL (on plain Postgres it would fail at first call).
     assert not any("data_quality_sweep" in s for s in generate_ddl(config))
     sweep = stmt_for(hypertable_ddl(config), "FUNCTION forecast.data_quality_sweep")
     assert "CREATE OR REPLACE" in sweep
     assert "orphan_series" in sweep
     assert "off_grid_target_time" in sweep
     assert "time_bucket(sr.sample_interval, p.target_time)" in sweep
+    # Catalog-driven (spec §8): the sweep iterates store_tables declarations
+    # instead of baking table names in, so instances added later are swept the
+    # moment their declaration row exists — and dropped tables are skipped.
+    assert "FROM forecast.store_tables" in sweep
+    assert "to_regclass" in sweep
     for table in ("forecasts", "predictors", "actuals"):
-        assert f"forecast.{table} p" in sweep
-    # No instance declares the observed column in the canonical config.
-    assert "observed_outside_bucket" not in sweep
+        assert f"forecast.{table} " not in sweep
+    # The observed check ships in the body; the per-table declaration gates it.
+    assert "observed_outside_bucket" in sweep
+    assert "has_target_time_observed" in sweep
+
+
+def test_catalog_points_split(config):
+    from forecast_store.ddl import catalog_ddl, points_ddl
+
+    catalog = catalog_ddl(config)
+    points = points_ddl(config)
+    # Composition is exactly generate_ddl, catalog first (triggers need fns).
+    assert catalog + points == generate_ddl(config)
+    # The catalog layer is decision-invariant: bands, the PK switch, and extra
+    # instances only ever touch the points layer.
+    from forecast_store.config import ActualsSpec
+
+    variants = [
+        StoreConfig.from_levels(["0.1", "0.5", "0.9"]),
+        StoreConfig(actuals_revisions=False),
+        StoreConfig(extra_tables=(ActualsSpec("tenant_b", revisions=False),)),
+    ]
+    for variant in variants:
+        assert catalog_ddl(variant) == catalog
+    # Each points block is self-contained: its store_tables declaration row
+    # arrives with it (an instance can be added to a provisioned store alone).
+    for table in ("forecasts", "predictors", "actuals"):
+        create = next(i for i, s in enumerate(points) if f"TABLE IF NOT EXISTS forecast.{table} (" in s)
+        seed = next(i for i, s in enumerate(points) if f"('{table}'," in s)
+        assert seed > create
+    assert not any("CREATE TABLE" in s and "evaluation" in s for s in points)

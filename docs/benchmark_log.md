@@ -76,6 +76,7 @@ Dronten, Opmeer, Leeuwarden, Arnhem.
 | XGBoost (weekly retrain) | `liander_xgboost` | all 11 wx + engineered | 7-level | 0.0946 | 0.1107 | 2026-08-25 |
 | GBLinear (weekly retrain) | `liander_gblinear` | all 11 wx + engineered | 7-level | 0.0947 | 0.1312 | 2026-08-26 |
 | TimesFM 2.5 (zero-shot) | `liander_timesfm` | none (univariate) | deciles | 0.1437 | 0.1928 | 2026-08-26 |
+| Moirai 2.0 R small (zero-shot) | `liander_moirai` | 3 wx | deciles | 0.1421 | 0.1856 | 2026-08-27 |
 
 ### Per-park rCRPS (global window)
 
@@ -86,7 +87,7 @@ Dronten, Opmeer, Leeuwarden, Arnhem.
 | xgboost | 0.0813 | 0.0877 | 0.1145 | 0.0926 | 0.0968 |
 | gblinear | 0.0824 | 0.0860 | 0.1169 | 0.0981 | 0.0902 |
 | timesfm | 0.1329 | 0.1351 | 0.1722 | 0.1368 | 0.1416 |
-| moirai (3/5 parks) | — | — | 0.1665 | 0.1374 | 0.1408 |
+| moirai | 0.1329 | 0.1329 | 0.1665 | 0.1374 | 0.1408 |
 
 Run notes:
 
@@ -107,15 +108,13 @@ Run notes:
 - **Moirai** is installed from uni2ts PR #256's branch (main pins
   numpy~=1.26/torch<2.5, incompatible with openstef-core).
 
-## In progress
+Six-model reading: covariate-fed Moirai beats univariate TimesFM on both
+metrics with the same decile band — but both trail Chronos-2 badly and the
+trained classical presets clearly; among the TSFMs, covariate access and
+model class both matter, and the covariate-variant runs below are designed
+to separate them.
 
-- **`liander_moirai`** — Moirai 2.0 R small, zero-shot, 3 wx covariates
-  (`feat_dynamic_real`), decile band. 3/5 parks complete as of 2026-08-27:
-  Arnhem 0.1408, Opmeer 0.1665, Leeuwarden 0.1374 (interim avg 0.1482; on
-  the matched 3 parks TimesFM averages 0.1502, so covariate-fed Moirai is
-  marginally ahead of univariate TimesFM). ~1h30m per park.
-
-## Queued (launching automatically when the Moirai run exits)
+## In progress (queued 2026-08-27, running automatically in sequence)
 
 Covariate-access variants, isolating "model class" from "input access".
 Same window, same targets; fastest first:

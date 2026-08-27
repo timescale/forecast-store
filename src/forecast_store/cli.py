@@ -1,7 +1,12 @@
 """CLI: the skill's executable surface.
 
-    forecast-store ddl [--band 0.05,0.1,...] [--schema forecast] [--single-belief-actuals] [--no-mean]
+    forecast-store ddl [--section all|catalog|tables] [--band 0.05,0.1,...]
+                       [--schema forecast] [--single-belief-actuals] [--no-mean]
     forecast-store provision --dsn postgres://...  [same options] [--no-timescale]
+
+``--section catalog`` prints the decision-invariant layer (registry, catalog,
+resolvers, evaluation, guard functions, sweep); ``--section tables`` prints
+the decision-derived points-table blocks the config declares.
 """
 
 from __future__ import annotations
@@ -11,7 +16,14 @@ import os
 import sys
 
 from forecast_store.config import StoreConfig
-from forecast_store.ddl import generate_ddl, hypertable_ddl
+from forecast_store.ddl import (
+    catalog_ddl,
+    catalog_hypertable_ddl,
+    generate_ddl,
+    hypertable_ddl,
+    points_ddl,
+    points_hypertable_ddl,
+)
 
 
 def _config_from_args(args: argparse.Namespace) -> StoreConfig:
@@ -42,6 +54,10 @@ def main(argv: list[str] | None = None) -> int:
     p_ddl = sub.add_parser("ddl", help="print provisioning DDL")
     _add_config_args(p_ddl)
     p_ddl.add_argument("--timescale", action="store_true", help="include hypertable statements")
+    p_ddl.add_argument(
+        "--section", choices=("all", "catalog", "tables"), default="all",
+        help="catalog = decision-invariant layer; tables = points-table blocks",
+    )
 
     p_prov = sub.add_parser("provision", help="provision a store")
     _add_config_args(p_prov)
@@ -52,9 +68,18 @@ def main(argv: list[str] | None = None) -> int:
     config = _config_from_args(args)
 
     if args.command == "ddl":
-        statements = generate_ddl(config)
-        if args.timescale:
-            statements += hypertable_ddl(config)
+        if args.section == "catalog":
+            statements = catalog_ddl(config)
+            if args.timescale:
+                statements += catalog_hypertable_ddl(config)
+        elif args.section == "tables":
+            statements = points_ddl(config)
+            if args.timescale:
+                statements += points_hypertable_ddl(config)
+        else:
+            statements = generate_ddl(config)
+            if args.timescale:
+                statements += hypertable_ddl(config)
         print(";\n\n".join(statements) + ";")
         return 0
 

@@ -639,10 +639,13 @@ argument: rationale §8.)
    metadata** (a dataset object that carries its resolution); bare frames error rather
    than having a resolution inferred from index spacing. Races resolve inside
    `register_series()` via `ON CONFLICT`.
-2. An **orphan/grid sweep** ships with the TimescaleDB layer as a generated function,
+2. An **orphan/grid sweep** ships with the TimescaleDB layer,
    `data_quality_sweep(scan_window)`: it scans the recent write window for ids absent from
    the registry, off-grid `target_time` (against the declared `sample_interval`), and —
-   where declared — `target_time_observed` outside its target's bucket (§6.1). Scheduling
+   where declared — `target_time_observed` outside its target's bucket (§6.1). The sweep
+   is **catalog-driven**: it discovers points tables from their `store_tables`
+   declarations at execution time, so an instance added later — with tooling or by hand —
+   is swept from the moment its declaration row exists, with no regeneration. Scheduling
    is deployment-owned (cron, `add_job`); alerts go through the standard hooks. The same
    sweep can flag anomalous `recorded_at − available_at` gaps — retro-stamped writes and
    unusually late arrivals.

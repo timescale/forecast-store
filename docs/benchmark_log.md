@@ -77,6 +77,10 @@ Dronten, Opmeer, Leeuwarden, Arnhem.
 | GBLinear (weekly retrain) | `liander_gblinear` | all 11 wx + engineered | 7-level | 0.0947 | 0.1312 | 2026-08-26 |
 | TimesFM 2.5 (zero-shot) | `liander_timesfm` | none (univariate) | deciles | 0.1437 | 0.1928 | 2026-08-26 |
 | Moirai 2.0 R small (zero-shot) | `liander_moirai` | 3 wx | deciles | 0.1421 | 0.1856 | 2026-08-27 |
+| Chronos-2 base, all-wx variant | `liander_chronos2-base-allwx` | all 11 wx | 7-level | **0.0711** | **0.0987** | 2026-08-28 |
+| TimesFM 2.5 + XReg | `liander_timesfm-cov` | 3 wx via XReg | deciles | 0.0894 | 0.1185 | 2026-08-27 |
+| TimesFM 2.5 + XReg, all-wx | `liander_timesfm-allwx` | all 11 wx via XReg | deciles | 0.0848 | 0.1116 | 2026-08-27 |
+| Moirai 2.0, all-wx variant | `liander_moirai-allwx` | all 11 wx | deciles | 0.1416 | 0.1868 | 2026-08-29 |
 
 ### Per-park rCRPS (global window)
 
@@ -88,6 +92,10 @@ Dronten, Opmeer, Leeuwarden, Arnhem.
 | gblinear | 0.0824 | 0.0860 | 0.1169 | 0.0981 | 0.0902 |
 | timesfm | 0.1329 | 0.1351 | 0.1722 | 0.1368 | 0.1416 |
 | moirai | 0.1329 | 0.1329 | 0.1665 | 0.1374 | 0.1408 |
+| chronos2-base-allwx | 0.0605 | 0.0657 | 0.0838 | 0.0730 | 0.0725 |
+| timesfm-cov | 0.0806 | 0.0838 | 0.1024 | 0.0924 | 0.0877 |
+| timesfm-allwx | 0.0744 | 0.0784 | 0.0984 | 0.0899 | 0.0831 |
+| moirai-allwx | 0.1323 | 0.1324 | 0.1662 | 0.1366 | 0.1404 |
 
 Run notes:
 
@@ -108,28 +116,27 @@ Run notes:
 - **Moirai** is installed from uni2ts PR #256's branch (main pins
   numpy~=1.26/torch<2.5, incompatible with openstef-core).
 
-Six-model reading: covariate-fed Moirai beats univariate TimesFM on both
-metrics with the same decile band — but both trail Chronos-2 badly and the
-trained classical presets clearly; among the TSFMs, covariate access and
-model class both matter, and the covariate-variant runs below are designed
-to separate them.
+### The covariate-access findings (variants completed 2026-08-27 → 08-29)
 
-## In progress (queued 2026-08-27, running automatically in sequence)
+The four variant runs isolate "input access" from "model class" — same
+window, same targets, only the covariates change:
 
-Covariate-access variants, isolating "model class" from "input access".
-Same window, same targets; fastest first:
+- **The covariate ladder dominates.** TimesFM at 0 → 3 → 11 covariates:
+  0.1437 → 0.0894 → 0.0848 rCRPS — a 41% improvement from input access
+  alone, through a *linear* side-channel (XReg in-context ridge; the
+  transformer never sees the covariates). Covariate-fed TimesFM leapfrogs
+  both trained classical presets.
+- **Saturation is model-dependent.** Chronos-2 gained ~2% from the extra 8
+  columns (0.0726 → 0.0711, the new overall leader); Moirai gained ~0.4%
+  (0.1421 → 0.1416, within noise — 44h of compute for a null result, its
+  any-variate sequence length scaling ~7× per extra-covariate load).
+- **Every covariate-fed TSFM beats the trained presets**; the gap between
+  the best TSFM (Chronos-2) and the rest is model class, not input access.
 
-| model | what changes | why |
-|---|---|---|
-| `timesfm-cov` | TimesFM + the 3 official covariates via its XReg path (in-context ridge regression; the transformer stays univariate) | TSFM comparison at equal input: timesfm vs moirai vs chronos2, all at 3 covariates |
-| `timesfm-allwx` | TimesFM + all 11 weather columns via XReg | covariate-access axis for TimesFM |
-| `chronos2-base-allwx` | Chronos-2 base fed all 11 (deviates from the official example's 3) | does the best model gain from the extra 8 columns? |
-| `moirai-allwx` | Moirai fed all 11 (native any-variate attention) | same axis for Moirai; **slow**: ~4–8× per vintage vs 3-covariate (sequence length scales with variates), est. ~1 day |
-
-Smoke-tested 2026-08-27 (1 park × 2 days each, labels `smoke_*` /
-`smoke2_*` — scratch, ignore). Known caveat: `wind_direction_10m` enters
-raw; it is circular (degrees), which models consume poorly — noted, not yet
-addressed.
+Caveats: TimesFM/Moirai rows are decile-band rCRPS (narrower basis);
+`wind_direction_10m` enters raw despite being circular (degrees) — noted,
+not addressed. Variant smoke tests live under scratch labels `smoke_*` /
+`smoke2_*` (1 park × 2 days; ignore).
 
 ## Planned / candidate benchmarks
 

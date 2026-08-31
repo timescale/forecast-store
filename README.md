@@ -125,14 +125,23 @@ result sink for its public liander2024 benchmark — real grid measurements with
 their real ~48-hour publication lags, weather as versioned vintage histories.
 Full official window, 5 wind parks × 306 days, identical store-served data:
 
-| model | avg rCRPS | avg rMAE@q50 |
-|---|---|---|
-| Chronos-2 base (zero-shot) | **0.0726** | **0.1016** |
-| Chronos-2 small (zero-shot) | 0.0739 | 0.1036 |
-| XGBoost (weekly retrain) | 0.0946 | 0.1107 |
-| GBLinear (weekly retrain) | 0.0947 | 0.1312 |
-| Moirai 2.0 R small (zero-shot)\* | 0.1421 | 0.1856 |
-| TimesFM 2.5 (zero-shot, univariate)\* | 0.1437 | 0.1928 |
+| model | weather covariates | avg rCRPS | avg rMAE@q50 |
+|---|---|---|---|
+| Chronos-2 base (zero-shot) | all 11 | **0.0711** | **0.0987** |
+| Chronos-2 base (zero-shot) | 3 (official example) | 0.0726 | 0.1016 |
+| Chronos-2 small (zero-shot) | 3 | 0.0739 | 0.1036 |
+| TimesFM 2.5 (zero-shot)\* | all 11, via XReg | 0.0848 | 0.1116 |
+| TimesFM 2.5 (zero-shot)\* | 3, via XReg | 0.0894 | 0.1185 |
+| XGBoost (weekly retrain) | all 11 + engineered | 0.0946 | 0.1107 |
+| GBLinear (weekly retrain) | all 11 + engineered | 0.0947 | 0.1312 |
+| Moirai 2.0 R small (zero-shot)\* | all 11 | 0.1416 | 0.1868 |
+| Moirai 2.0 R small (zero-shot)\* | 3 | 0.1421 | 0.1856 |
+| TimesFM 2.5 (zero-shot)\* | none (univariate) | 0.1437 | 0.1928 |
+
+The covariate ladder is the finding: input access moves TimesFM 41%
+(0.1437 → 0.0848) through a *linear* side-channel, while every
+covariate-fed TSFM beats the trained presets — and the store is what makes
+the comparison honest, serving every model identical versioned vintages.
 
 \* Decile-native models: scored over their own 5-level band (a separate
 forecast-log instance whose declared band is true), so their rCRPS spans a

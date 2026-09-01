@@ -130,6 +130,7 @@ Full official window, 5 wind parks × 306 days, identical store-served data:
 | Chronos-2 base (zero-shot) | all 11 | **0.0711** | **0.0987** |
 | Chronos-2 base (zero-shot) | 3 (official example) | 0.0726 | 0.1016 |
 | Chronos-2 small (zero-shot) | 3 | 0.0739 | 0.1036 |
+| XGBoost + conformal calibration | all 11 + engineered | 0.0834 | 0.1126 |
 | TimesFM 2.5 (zero-shot)\* | all 11, via XReg | 0.0848 | 0.1116 |
 | TimesFM 2.5 (zero-shot)\* | 3, via XReg | 0.0894 | 0.1185 |
 | XGBoost (weekly retrain) | all 11 + engineered | 0.0946 | 0.1107 |
@@ -138,10 +139,13 @@ Full official window, 5 wind parks × 306 days, identical store-served data:
 | Moirai 2.0 R small (zero-shot)\* | 3 | 0.1421 | 0.1856 |
 | TimesFM 2.5 (zero-shot)\* | none (univariate) | 0.1437 | 0.1928 |
 
-The covariate ladder is the finding: input access moves TimesFM 41%
-(0.1437 → 0.0848) through a *linear* side-channel, while every
-covariate-fed TSFM beats the trained presets — and the store is what makes
-the comparison honest, serving every model identical versioned vintages.
+Two findings carry the table: input access moves TimesFM 41%
+(0.1437 → 0.0848) through a *linear* side-channel, and conformal
+calibration alone closes half of the classical presets' gap (rCRPS −12%,
+median untouched) — most of what separated the middle of this table was
+covariate access and band calibration, not model class. The store is what
+makes the comparison honest, serving every model identical versioned
+vintages.
 
 \* Decile-native models: scored over their own 5-level band (a separate
 forecast-log instance whose declared band is true), so their rCRPS spans a

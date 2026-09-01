@@ -81,6 +81,7 @@ Dronten, Opmeer, Leeuwarden, Arnhem.
 | TimesFM 2.5 + XReg | `liander_timesfm-cov` | 3 wx via XReg | deciles | 0.0894 | 0.1185 | 2026-08-27 |
 | TimesFM 2.5 + XReg, all-wx | `liander_timesfm-allwx` | all 11 wx via XReg | deciles | 0.0848 | 0.1116 | 2026-08-27 |
 | Moirai 2.0, all-wx variant | `liander_moirai-allwx` | all 11 wx | deciles | 0.1416 | 0.1868 | 2026-08-29 |
+| XGBoost + conformal calibration | `liander_xgboost-cqr` | all 11 wx + engineered | 7-level | 0.0834 | 0.1126 | 2026-08-31 |
 
 ### Per-park rCRPS (global window)
 
@@ -96,6 +97,7 @@ Dronten, Opmeer, Leeuwarden, Arnhem.
 | timesfm-cov | 0.0806 | 0.0838 | 0.1024 | 0.0924 | 0.0877 |
 | timesfm-allwx | 0.0744 | 0.0784 | 0.0984 | 0.0899 | 0.0831 |
 | moirai-allwx | 0.1323 | 0.1324 | 0.1662 | 0.1366 | 0.1404 |
+| xgboost-cqr | 0.0702 | 0.0777 | 0.1021 | 0.0831 | 0.0838 |
 
 Run notes:
 
@@ -132,6 +134,27 @@ window, same targets, only the covariates change:
   any-variate sequence length scaling ~7× per extra-covariate load).
 - **Every covariate-fed TSFM beats the trained presets**; the gap between
   the best TSFM (Chronos-2) and the rest is model class, not input access.
+
+### The band-calibration finding (`xgboost-cqr`, 2026-08-31)
+
+The presets' rCRPS gap was diagnosed from the table itself: xgboost and
+gblinear score nearly identical rCRPS (0.0946 / 0.0947) despite a 16% rMAE
+gap — a much better median that buys no distributional skill means the
+quantile *spread* is the bottleneck. `xgboost-cqr` tests it: the same
+preset wrapped with openstef's `ConformalizedQuantileCalibrator`
+(scripts/cqr_forecaster.py), fitted honestly — split-conformal on a
+held-out 14-day window replayed with production knowledge cuts, never
+in-sample (stock postprocessing fits on training predictions, which
+gradient boosting's optimistic residuals would neuter).
+
+Result: **rCRPS −11.8%** (0.0946 → 0.0834, improved on all 5 parks, −10%
+to −14%) while **rMAE stayed put** (0.1107 → 0.1126; the slight rise is
+the 14 training days sacrificed to the calibration split — the transform
+never touches the median). Confirmed: the preset's raw band is drastically
+overconfident (the corrections widen q05–q95 ~5× early on), and roughly
+half the classical-vs-TSFM rCRPS gap was calibration, not forecasting
+skill. Calibrated XGBoost is the best non-Chronos entry in the table,
+ahead of covariate-fed TimesFM.
 
 Caveats: TimesFM/Moirai rows are decile-band rCRPS (narrower basis);
 `wind_direction_10m` enters raw despite being circular (degrees) — noted,

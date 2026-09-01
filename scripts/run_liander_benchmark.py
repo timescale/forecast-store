@@ -62,6 +62,9 @@ MODELS = (
     "timesfm-cov",
     "timesfm-allwx",
     "moirai-allwx",
+    # Band-calibration variant: the preset + openstef's split-conformal
+    # quantile calibrator fitted on a held-out window (see cqr_forecaster.py).
+    "xgboost-cqr",
 )
 CHRONOS_BATCH_SIZE = 16  # the official example's batched-inference setting
 
@@ -150,10 +153,11 @@ def build_forecaster_factory(model: str, cache_dir: Path, quantiles, horizons):
     )
     from openstef_models.presets import ForecastingWorkflowConfig
 
+    base_model = model.removesuffix("-cqr")
     config = ForecastingWorkflowConfig(
         model_id="common_model_",
         run_name=None,
-        model=model,
+        model=base_model,
         horizons=horizons,
         quantiles=quantiles,
         model_reuse_enable=True,
@@ -166,9 +170,17 @@ def build_forecaster_factory(model: str, cache_dir: Path, quantiles, horizons):
         relative_humidity_column="relative_humidity_2m",
         energy_price_column="EPEX_NL",
     )
-    factory = create_openstef4_preset_backtest_forecaster(
-        workflow_config=config, cache_dir=cache_dir
-    )
+    if model.endswith("-cqr"):
+        # Same preset, wrapped with held-out split-conformal calibration.
+        from cqr_forecaster import create_cqr_preset_backtest_forecaster
+
+        factory = create_cqr_preset_backtest_forecaster(
+            workflow_config=config, cache_dir=cache_dir
+        )
+    else:
+        factory = create_openstef4_preset_backtest_forecaster(
+            workflow_config=config, cache_dir=cache_dir
+        )
     n_processes = int(os.environ.get("OPENSTEF_N_PROCESSES", "0")) or min(
         4, os.cpu_count() or 1
     )

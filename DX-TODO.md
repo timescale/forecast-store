@@ -90,12 +90,52 @@ owns the transaction. Items are ranked by impact; check them off as they land.
   - Decisions taken: (a) the `(ts, {col: val})` mapping shape; (b) three
     role-named functions kept; (c) scalar sugar `(ts, 1.0)` kept.
 
-- [ ] **5. Connection handling is mixed.**
+- [x] **5. Connection handling is mixed.**
   `provision` takes a DSN and opens its own connection; reads/writes take a
   `conn`; integration classes take a DSN and connect per call.
   - Decide whether to add a thin `Store` facade bound to `(conn_or_dsn, config)`
   - Free functions stay underneath; the facade is sugar and the natural home for item 1's helpers
   - Consider letting `provision` accept an existing `conn`
+
+  **State after items 1/2/4/6 (2026-09-02):** every SDK call is
+  `f(conn, config, ...)`; `provision(dsn)` is the only function that opens a
+  connection and commits; the four adapters take a DSN, connect per call,
+  commit per call, and carry the lazy-config `_StoreBinding` from item 4.
+  psycopg's own `with connect(dsn) as conn:` commits on normal exit and rolls
+  back on exception — the facade can inherit that rather than invent rules.
+
+  **Done (recommendations accepted, 2026-09-02)** — `forecast_store/store.py`,
+  tests in `tests/test_store.py`. Decisions as taken:
+  1. Add a facade at all? [yes — thin `Store`, forwarding to the free
+     functions, which stay the documented lower layer]
+  2. What it binds: a connection, a DSN, or both? [connection as the core:
+     `Store(conn, config=None, *, schema=None)`; plus `Store.connect(source,
+     ...)` as a context manager, where `source` is a DSN string or anything
+     with a `.connection()` context manager (psycopg_pool's pools, duck-typed,
+     no dependency). The facade never commits; transaction ownership is
+     unchanged in every form — a pool checkout's commit-on-exit is the unit
+     of work. Adapters take the same `source` (DSN kept: benchmark workers
+     are separate processes). Pooled hot paths should load `StoreConfig`
+     once and pass it in rather than rely on the lazy load per checkout.
+     Rejected: a pool-holding `Store` that checks out per method and
+     auto-commits — it silently makes every call its own transaction]
+  3. `provision` accepts a connection too? [yes — `provision(dsn_or_conn,
+     ...)`; with a connection it runs in the caller's transaction and does
+     not commit (all DDL already runs in one transaction). Stays a function,
+     not a facade method: provisioning is admin, not a store operation]
+  4. Config resolution? [`Store(conn)` with no config loads it from the
+     store on first use; `_StoreBinding` folds into `Store`]
+  5. Rebuild the adapters on it? [yes — each method becomes
+     `with Store.connect(dsn, ...) as store:` and caches `store.config`
+     after first use; behaviour unchanged, private plumbing deleted]
+  6. Which style leads in the README? [the facade in the quickstart; one
+     sentence pointing at the free functions beneath]
+  7. Coupling with item 10: a `store.forecast_asof(...)` method naturally
+     executes and returns rows. [decide now: the facade executes; the
+     `(sql, params)` builder stays for SQL users]
+  8. Name? [`Store` — `from forecast_store import Store`]
+  - Non-goals: shipping a pool (accepting the caller's is in scope, above),
+    an async variant (can mirror later), retries.
 
 ## Second slice
 
@@ -122,7 +162,7 @@ owns the transaction. Items are ranked by impact; check them off as they land.
   Returns `(sql, params)` instead of executing, hardcodes the canonical
   `forecasts` table, and lacks `recorded_before`.
   - Add `table` and `recorded_before` parameters
-  - Decide: execute like the reads, or give the reads a builder form too
+  - [x] Decided with item 5: `Store.forecast_asof(...)` executes and returns rows; the `(sql, params)` builder stays for SQL users
 
 - [ ] **11. CLI cannot express the full config.**
   No `extra_tables`, `enforcement`, or `append_only_guard`; no config-file input;

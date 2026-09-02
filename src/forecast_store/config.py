@@ -222,33 +222,3 @@ class StoreConfig:
         """All value columns of the forecasts table (mean first, then the band)."""
         cols = ("mean",) if self.has_mean else ()
         return cols + self.quantile_columns
-
-
-class _StoreBinding:
-    """How a store-backed object finds its declaration.
-
-    Either an explicit :class:`StoreConfig`, or — the default — the store's
-    own ``store_tables`` at ``schema`` (default ``forecast``), read once via
-    :meth:`StoreConfig.from_store` with the first connection handed to
-    :meth:`config`. Shared by the engine integrations so that omitting
-    ``store_config`` always means "whatever the store was provisioned with",
-    never a guessed default.
-    """
-
-    __slots__ = ("_config", "schema")
-
-    def __init__(
-        self, store_config: StoreConfig | None = None, schema: str | None = None
-    ) -> None:
-        if store_config is not None and schema is not None and schema != store_config.schema:
-            raise ValueError(
-                f"schema {schema!r} conflicts with store_config.schema {store_config.schema!r}"
-            )
-        self._config = store_config
-        self.schema = store_config.schema if store_config is not None else (schema or "forecast")
-
-    def config(self, conn: Any) -> StoreConfig:
-        """The declaration, loading it from the store on first call."""
-        if self._config is None:
-            self._config = StoreConfig.from_store(conn, self.schema)
-        return self._config

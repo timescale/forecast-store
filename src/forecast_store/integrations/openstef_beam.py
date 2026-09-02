@@ -25,12 +25,13 @@ spec §7.1, shared between forecast runs and evaluation runs.
 from __future__ import annotations
 
 import math
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-import psycopg
 from openstef_beam.benchmarking.models import BenchmarkTarget
 from openstef_beam.benchmarking.storage.base import BenchmarkStorage
 from openstef_beam.benchmarking.storage.local_storage import LocalBenchmarkStorage
@@ -48,11 +49,10 @@ from openstef_core.datasets.validated_datasets import ForecastDataset
 from openstef_core.types import AvailableAt, Quantile
 from pydantic import Field, PrivateAttr, TypeAdapter
 
-from forecast_store.config import StoreConfig, _StoreBinding
+from forecast_store.config import StoreConfig
 from forecast_store.naming import parse_quantile_column, quantile_column
-from forecast_store.read import read_versioned_series
-from forecast_store.series import get_series_id
-from forecast_store.write import write_forecast_run
+from forecast_store.read import _table_declaration
+from forecast_store.store import ConnectionSource, Store, _schema_for
 
 _METRICS_ADAPTER = TypeAdapter(list[SubsetMetric])
 _FILTERING_ADAPTER = TypeAdapter(Filtering)
@@ -70,7 +70,10 @@ class TimescaleTargetProvider(TargetProvider[BenchmarkTarget, None]):
     (default ``forecast``).
     """
 
-    dsn: str
+    source: Any = Field(
+        description="Store connection source: a DSN, or a pool with a .connection() "
+        "context manager (one connection per call)."
+    )
     targets: list[BenchmarkTarget]
     measurement_series: dict[str, str] = Field(
         description="target.name -> actuals series name"
@@ -95,19 +98,26 @@ class TimescaleTargetProvider(TargetProvider[BenchmarkTarget, None]):
     )
     recorded_before: datetime | None = None
 
-    _binding: _StoreBinding = PrivateAttr()
+    _loaded: StoreConfig | None = PrivateAttr(default=None)
 
     def model_post_init(self, _context: Any) -> None:
-        self._binding = _StoreBinding(self.store_config, self.store_schema)
+        _schema_for(self.store_config, self.store_schema)  # a contradicting pair fails here
+
+    @contextmanager
+    def _store(self) -> Iterator[Store]:
+        """A Store for one call; the declaration, once resolved, is kept."""
+        with Store.connect(
+            self.source, self.store_config or self._loaded, schema=self.store_schema
+        ) as store:
+            yield store
+            self._loaded = store.config
 
     def _read_versioned(
-        self, conn, series_name: str, target: BenchmarkTarget, column: str, table: str
+        self, store: Store, series_name: str, target: BenchmarkTarget, column: str, table: str
     ):
         import pandas as pd
 
-        interval, rows = read_versioned_series(
-            conn,
-            self._binding.config(conn),
+        interval, rows = store.read_versioned_series(
             series_name,
             table=table,
             start=target.train_start,
@@ -122,9 +132,9 @@ class TimescaleTargetProvider(TargetProvider[BenchmarkTarget, None]):
         return list(self.targets)
 
     def get_measurements_for_target(self, target: BenchmarkTarget) -> VersionedTimeSeriesDataset:
-        with psycopg.connect(self.dsn) as conn:
+        with self._store() as store:
             return self._read_versioned(
-                conn,
+                store,
                 self.measurement_series[target.name],
                 target,
                 self.target_column,
@@ -133,9 +143,9 @@ class TimescaleTargetProvider(TargetProvider[BenchmarkTarget, None]):
 
     def get_predictors_for_target(self, target: BenchmarkTarget) -> VersionedTimeSeriesDataset:
         bindings = self.predictor_series.get(target.name, {})
-        with psycopg.connect(self.dsn) as conn:
+        with self._store() as store:
             datasets = [
-                self._read_versioned(conn, series_name, target, column, table="predictors")
+                self._read_versioned(store, series_name, target, column, table="predictors")
                 for column, series_name in bindings.items()
             ]
         return VersionedTimeSeriesDataset.concat(datasets=datasets, mode="outer")
@@ -200,7 +210,7 @@ class TimescaleBenchmarkStorage(BenchmarkStorage):
 
     def __init__(
         self,
-        dsn: str,
+        source: ConnectionSource,
         run_name: str,
         target_provider: TimescaleTargetProvider,
         *,
@@ -209,12 +219,16 @@ class TimescaleBenchmarkStorage(BenchmarkStorage):
         analysis_dir: Path | None = None,
         forecast_table: str = "forecasts",
     ) -> None:
-        self._dsn = dsn
+        self._source = source
         self._run_name = run_name
         self._provider = target_provider
-        self._binding = (
-            _StoreBinding(store_config) if store_config is not None else target_provider._binding
-        )
+        # Declaration: explicit, else the provider's (same store) — read from
+        # the store at the provider's schema on first use when neither has one.
+        if store_config is not None:
+            self._config, self._schema = store_config, store_config.schema
+        else:
+            self._config = target_provider.store_config
+            self._schema = _schema_for(self._config, target_provider.store_schema)
         self._model = model_label
         # The workspace driver (spec §7.2): point benchmarks at a separate
         # forecast-log instance to keep experiment artifacts out of production
@@ -226,20 +240,24 @@ class TimescaleBenchmarkStorage(BenchmarkStorage):
 
     # -- helpers -----------------------------------------------------------
 
+    @contextmanager
+    def _store(self) -> Iterator[Store]:
+        """A Store for one call — its block is the transaction; the
+        declaration, once resolved, is kept."""
+        with Store.connect(self._source, self._config, schema=self._schema) as store:
+            yield store
+            self._config = store.config
+
     def _label(self, target: BenchmarkTarget) -> str:
         return f"{self._run_name}/{target.name}"
 
     def _series(self, target: BenchmarkTarget) -> str:
         return self._provider.measurement_series[target.name]
 
-    def _series_id(self, conn, target: BenchmarkTarget) -> int:
-        return get_series_id(conn, self._binding.config(conn), self._series(target))
-
     def _has_runs(self, table: str, label: str) -> bool:
-        with psycopg.connect(self._dsn) as conn, conn.cursor() as cur:
-            s = self._binding.config(conn).schema
+        with self._store() as store, store.conn.cursor() as cur:
             cur.execute(
-                f"SELECT EXISTS (SELECT 1 FROM {s}.{table} WHERE run_name = %s)",
+                f"SELECT EXISTS (SELECT 1 FROM {store.schema}.{table} WHERE run_name = %s)",
                 (label,),
             )
             return cur.fetchone()[0]
@@ -255,10 +273,9 @@ class TimescaleBenchmarkStorage(BenchmarkStorage):
         }
         label = self._label(target)
 
-        with psycopg.connect(self._dsn) as conn:
-            config = self._binding.config(conn)
-            s = config.schema
-            with conn.cursor() as cur:
+        with self._store() as store:
+            s = store.schema
+            with store.conn.cursor() as cur:
                 _allow_workspace_decompression(cur)
                 # Overwrite gracefully: replace this label's previous artifacts.
                 cur.execute(
@@ -276,9 +293,7 @@ class TimescaleBenchmarkStorage(BenchmarkStorage):
                     )
                     for ts, row in event_frame.iterrows()
                 ]
-                write_forecast_run(
-                    conn,
-                    config,
+                store.write_forecast_run(
                     table=self._forecast_table,
                     series=self._series(target),
                     model=self._model,
@@ -287,20 +302,18 @@ class TimescaleBenchmarkStorage(BenchmarkStorage):
                     params={"benchmark_run": self._run_name, "target": target.name},
                     points=points,
                 )
-            conn.commit()
+        # Leaving the block committed: the overwrite and every event's run, together.
 
     def load_backtest_output(self, target: BenchmarkTarget) -> TimeSeriesDataset:
         import pandas as pd
 
-        from forecast_store.read import _table_declaration
-
         label = self._label(target)
 
-        with psycopg.connect(self._dsn) as conn, conn.cursor() as cur:
-            s = self._binding.config(conn).schema
+        with self._store() as store, store.conn.cursor() as cur:
+            s = store.schema
             value_cols = _table_declaration(cur, s, self._forecast_table)["value_columns"]
             col_sql = "".join(f", f.{c}" for c in value_cols)
-            series_id = self._series_id(conn, target)
+            series_id = store.get_series_id(self._series(target))
             cur.execute(
                 f"SELECT sample_interval FROM {s}.series WHERE series_id = %s", (series_id,)
             )
@@ -353,10 +366,10 @@ class TimescaleBenchmarkStorage(BenchmarkStorage):
             ],
         }
 
-        with psycopg.connect(self._dsn) as conn:
-            s = self._binding.config(conn).schema
-            series_id = self._series_id(conn, target)
-            with conn.cursor() as cur:
+        with self._store() as store:
+            s = store.schema
+            series_id = store.get_series_id(self._series(target))
+            with store.conn.cursor() as cur:
                 cur.execute(
                     f"INSERT INTO {s}.evaluation_runs (run_name, params) "
                     "VALUES (%s, %s) RETURNING eval_run_id",
@@ -393,16 +406,15 @@ class TimescaleBenchmarkStorage(BenchmarkStorage):
                     "VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
                     metric_rows,
                 )
-            conn.commit()
+        # Leaving the block committed: evaluation run, series and metrics together.
 
     def load_evaluation_output(self, target: BenchmarkTarget) -> EvaluationReport:
         import pandas as pd
 
         label = self._label(target)
-        with psycopg.connect(self._dsn) as conn, conn.cursor() as cur:
-            s = self._binding.config(conn).schema
+        with self._store() as store, store.conn.cursor() as cur:
             cur.execute(
-                f"SELECT params FROM {s}.evaluation_runs WHERE run_name = %s "
+                f"SELECT params FROM {store.schema}.evaluation_runs WHERE run_name = %s "
                 "ORDER BY recorded_at DESC LIMIT 1",
                 (label,),
             )

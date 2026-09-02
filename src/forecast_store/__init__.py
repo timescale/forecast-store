@@ -6,11 +6,11 @@ docs/forecast-store-convention.md; this package is its generator and
 reference implementation.
 
 The supported SDK surface is re-exported here: declare (or load) a
-``StoreConfig``, ``provision`` a store, ``register_series``, then write and
-read through the functions below — all against a caller-owned psycopg
-connection. Engine integrations (``forecast_store.integrations.*``) are not
-re-exported: each imports its engine, so install the matching extra and
-import the submodule.
+``StoreConfig``, ``provision`` a store, then work through a ``Store`` bound
+to a connection — or through the module functions beneath it, which take
+the same caller-owned psycopg connection and declaration. Engine
+integrations (``forecast_store.integrations.*``) are not re-exported: each
+imports its engine, so install the matching extra and import the submodule.
 """
 
 from forecast_store.config import (
@@ -33,6 +33,7 @@ from forecast_store.provision import (
 from forecast_store.queries import forecast_asof
 from forecast_store.read import UnknownTable, read_context_series, read_versioned_series
 from forecast_store.series import SeriesRef, UnknownSeries, get_series_id, register_series
+from forecast_store.store import ConnectionSource, Store
 from forecast_store.write import (
     ConflictingBelief,
     MisalignedTimestamp,
@@ -59,6 +60,9 @@ __all__ = [
     "table_configs",
     "provision",
     "ProvisionReport",
+    # the facade
+    "Store",
+    "ConnectionSource",
     # series registry
     "register_series",
     "get_series_id",

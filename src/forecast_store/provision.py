@@ -9,6 +9,7 @@ migration (spec §7.3), never a side effect of provisioning.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from forecast_store.config import StoreConfig
 from forecast_store.ddl import generate_ddl, hypertable_ddl, table_configs
@@ -44,12 +45,16 @@ def _stored_config(cur, schema: str, table: str):
 
 
 def provision(
-    dsn: str,
+    target: str | Any,
     config: StoreConfig | None = None,
     *,
     timescale: bool | None = None,
 ) -> ProvisionReport:
-    """Create (or verify) the store described by ``config`` at ``dsn``.
+    """Create (or verify) the store described by ``config`` at ``target``.
+
+    ``target`` is a DSN or a pool (a connection is opened for the job and the
+    result committed), or an open connection — then the statements run in
+    the caller's transaction and nothing is committed: the caller decides.
 
     ``timescale``: force TimescaleDB features on/off; default auto-detects
     the extension and degrades gracefully to plain Postgres.
@@ -57,31 +62,41 @@ def provision(
     import psycopg
 
     config = config or StoreConfig()
-    with psycopg.connect(dsn) as conn:
-        with conn.cursor() as cur:
-            if timescale is None:
-                cur.execute("SELECT 1 FROM pg_extension WHERE extname = 'timescaledb'")
-                timescale = cur.fetchone() is not None
+    if isinstance(target, psycopg.Connection):
+        return _provision(target, config, timescale)
 
-            already = _stored_config(cur, config.schema, "forecasts")
-            for table, requested in table_configs(config).items():
-                stored = _stored_config(cur, config.schema, table)
-                if stored is not None and stored != requested:
-                    raise MigrationRequired(
-                        f"table '{config.schema}.{table}' is provisioned with a "
-                        f"different declaration.\n  stored:    {stored}\n"
-                        f"  requested: {requested}\n"
-                        "Changing a provisioned table (e.g. its band) is a migration; "
-                        "v0 does not apply migrations. (Stored tables absent from this "
-                        "config are left untouched: instances arrive as additions.)"
-                    )
+    from forecast_store.store import _connection
 
-            statements = generate_ddl(config)
-            if timescale:
-                statements += hypertable_ddl(config)
-            for stmt in statements:
-                cur.execute(stmt)
+    with _connection(target) as conn:
+        report = _provision(conn, config, timescale)
         conn.commit()
+    return report
+
+
+def _provision(conn: Any, config: StoreConfig, timescale: bool | None) -> ProvisionReport:
+    with conn.cursor() as cur:
+        if timescale is None:
+            cur.execute("SELECT 1 FROM pg_extension WHERE extname = 'timescaledb'")
+            timescale = cur.fetchone() is not None
+
+        already = _stored_config(cur, config.schema, "forecasts")
+        for table, requested in table_configs(config).items():
+            stored = _stored_config(cur, config.schema, table)
+            if stored is not None and stored != requested:
+                raise MigrationRequired(
+                    f"table '{config.schema}.{table}' is provisioned with a "
+                    f"different declaration.\n  stored:    {stored}\n"
+                    f"  requested: {requested}\n"
+                    "Changing a provisioned table (e.g. its band) is a migration; "
+                    "v0 does not apply migrations. (Stored tables absent from this "
+                    "config are left untouched: instances arrive as additions.)"
+                )
+
+        statements = generate_ddl(config)
+        if timescale:
+            statements += hypertable_ddl(config)
+        for stmt in statements:
+            cur.execute(stmt)
 
     return ProvisionReport(
         schema=config.schema,

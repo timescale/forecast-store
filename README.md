@@ -54,25 +54,26 @@ Write a forecast with honest knowledge time, then read it back as-of any
 moment:
 
 ```python
-import psycopg
-from forecast_store import (
-    StoreConfig, register_series, write_actuals, write_forecast_run, write_predictors,
-)
+from forecast_store import Store
 
-with psycopg.connect(DSN) as conn:
-    config = StoreConfig.from_store(conn)  # the declaration the store was provisioned with
-    register_series(conn, config, "site42/load", "15 minutes")  # get-or-create
-    write_forecast_run(
-        conn, config, series="site42/load",     # a registered name, or its series_id
+with Store.connect(DSN) as store:            # a DSN or a pool; declaration read from the store
+    store.register_series("site42/load", "15 minutes")   # get-or-create
+    store.write_forecast_run(
+        series="site42/load",                 # a registered name, or its series_id
         model="my-model", run_name="prod/site42",
-        available_at=now,                       # the knowledge time, recorded
+        available_at=now,                     # the knowledge time, recorded
         points=[(ts, {"q05": 1.1, "q50": 2.0, "q95": 3.2}), ...],
     )
     # Same point shape for measurements and vendor feeds; knowledge time follows the table's role:
-    write_actuals(conn, config, "site42/load", [(ts, 2.1), ...])                # arrival measured
-    write_predictors(conn, config, "site42/wx/temp", [(ts, 9.8), ...], available_at=published)
-    conn.commit()  # run + points: one transaction
+    store.write_actuals("site42/load", [(ts, 2.1), ...])                  # arrival measured
+    store.write_predictors("site42/wx/temp", [(ts, 9.8), ...], available_at=published)
+# the block is the unit of work: committed on exit, rolled back on exception
 ```
+
+`Store` is sugar over the module functions — `write_forecast_run(conn, config, ...)` and
+friends take a connection and a declaration you manage, and never commit. Bind a connection
+you already hold (or a pool checkout) with `Store(conn, config)`; `StoreConfig.from_store(conn)`
+reads the declaration a store was provisioned with.
 
 ```sql
 -- The workhorse query: the latest belief per target, as of a knowledge cutoff.
@@ -116,9 +117,10 @@ workflow.fit(dataset)
 workflow.predict(dataset)  # persisted: run + points, real available_at, one transaction
 ```
 
-Every adapter reads the store's declaration from its own `store_tables` on first use when
-`store_config` is omitted — pass `schema=` (or `store_schema=` on the provider) for a store
-outside the default `forecast` schema.
+Every adapter takes a connection source — a DSN, or a pool with a `.connection()` context
+manager — and works in one connection per call. The store's declaration is read from its own
+`store_tables` on first use when `store_config` is omitted; pass `schema=` (or `store_schema=`
+on the provider) for a store outside the default `forecast` schema.
 
 Details, mappings, and packaging notes: [`docs/integrations/openstef.md`](docs/integrations/openstef.md).
 

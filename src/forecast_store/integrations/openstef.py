@@ -30,7 +30,6 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
-import psycopg
 from openstef_models.workflows.custom_forecasting_workflow import (
     CustomForecastingWorkflow,
     ForecastingCallback,
@@ -38,11 +37,9 @@ from openstef_models.workflows.custom_forecasting_workflow import (
 
 from dataclasses import dataclass
 
-from forecast_store.config import StoreConfig, _StoreBinding
+from forecast_store.config import StoreConfig
 from forecast_store.naming import quantile_column
-from forecast_store.read import read_context_series
-from forecast_store.series import register_series
-from forecast_store.write import write_forecast_run
+from forecast_store.store import ConnectionSource, Store, _schema_for
 
 
 @dataclass(frozen=True)
@@ -91,7 +88,8 @@ class StoreReader:
     the leakage audit for both halves of the input (spec §9.3).
 
     Args:
-        dsn: Store connection string.
+        source: Store connection source — a DSN, or a pool with a
+            ``.connection()`` context manager (one connection per call).
         store_config: The store's declaration. Omitted (the default), it is
             read from the store's own ``store_tables`` on first use.
         schema: Where the store lives when ``store_config`` is omitted
@@ -100,13 +98,14 @@ class StoreReader:
 
     def __init__(
         self,
-        dsn: str,
+        source: ConnectionSource,
         store_config: StoreConfig | None = None,
         *,
         schema: str | None = None,
     ) -> None:
-        self._dsn = dsn
-        self._binding = _StoreBinding(store_config, schema)
+        self._source = source
+        self._schema = _schema_for(store_config, schema)
+        self._config = store_config
 
     def context(
         self,
@@ -143,11 +142,8 @@ class StoreReader:
         columns: dict[str, Any] = {}
         intervals: dict[str, Any] = {}
 
-        with psycopg.connect(self._dsn) as conn:
-            config = self._binding.config(conn)  # explicit, or the store's own
-            interval, rows = read_context_series(
-                conn,
-                config,
+        with Store.connect(self._source, self._config, schema=self._schema) as store:
+            interval, rows = store.read_context_series(
                 target_series,
                 table="actuals",  # the target's measured history, by contract (§9.3)
                 start=history_start,
@@ -185,9 +181,7 @@ class StoreReader:
                     # Plain name: a vendor feed, the common covariate case.
                     series_name, extra = spec, {"table": "predictors"}
                     sources[column] = {"series": spec, "table": "predictors"}
-                interval, rows = read_context_series(
-                    conn,
-                    config,
+                interval, rows = store.read_context_series(
                     series_name,
                     start=history_start,
                     end=horizon_end,
@@ -200,6 +194,7 @@ class StoreReader:
                     {ts: value for ts, _, value in rows}, dtype=float
                 )
                 gap_stats[column] = sum(1 for _, raw, _ in rows if raw is None)
+            self._config = store.config  # keep the resolved declaration for later calls
 
         if len(set(intervals.values())) > 1:
             raise ValueError(f"series are on different grids: {intervals}")
@@ -222,7 +217,8 @@ class ForecastStoreCallback(ForecastingCallback):
     """Persist every prediction of a workflow into a forecast store.
 
     Args:
-        dsn: Store connection string.
+        source: Store connection source — a DSN, or a pool with a
+            ``.connection()`` context manager (one connection per prediction).
         series_name: Store series this workflow forecasts (the target).
         store_config: The store's declaration. Omitted (the default), it is
             read from the store's own ``store_tables`` on first use — so it
@@ -236,7 +232,7 @@ class ForecastStoreCallback(ForecastingCallback):
 
     def __init__(
         self,
-        dsn: str,
+        source: ConnectionSource,
         series_name: str,
         *,
         store_config: StoreConfig | None = None,
@@ -244,9 +240,10 @@ class ForecastStoreCallback(ForecastingCallback):
         auto_register: bool = True,
         model_version: str | None = None,
     ) -> None:
-        self._dsn = dsn
+        self._source = source
         self._series_name = series_name
-        self._binding = _StoreBinding(store_config, schema)
+        self._schema = _schema_for(store_config, schema)
+        self._config = store_config
         self._auto_register = auto_register
         self._model_version = model_version
         self.last_run_id = None  # set after each successful write
@@ -255,12 +252,13 @@ class ForecastStoreCallback(ForecastingCallback):
         available_at = datetime.now(timezone.utc)  # real knowledge time
         workflow: CustomForecastingWorkflow = context.workflow
 
-        with psycopg.connect(self._dsn) as conn:
-            config = self._binding.config(conn)  # explicit, or the store's own
-            self.last_run_id = self._persist(conn, config, workflow, data, result, available_at)
+        with Store.connect(self._source, self._config, schema=self._schema) as store:
+            self.last_run_id = self._persist(store, workflow, data, result, available_at)
+            self._config = store.config  # keep the resolved declaration for later calls
+        # Leaving the block committed: run + points, one transaction.
 
-    def _persist(self, conn, config, workflow, data, result, available_at):  # noqa: ANN001
-        col_map = self._quantile_column_map(result, config)
+    def _persist(self, store: Store, workflow, data, result, available_at):  # noqa: ANN001
+        col_map = self._quantile_column_map(result, store.config)
         points = self._points(result, col_map)
         context_start, context_end, provenance = self._context_bounds(data, result)
 
@@ -286,12 +284,10 @@ class ForecastStoreCallback(ForecastingCallback):
             params["context_provenance"] = store_context
 
         if self._auto_register:
-            register_series(conn, config, self._series_name, result.sample_interval)
+            store.register_series(self._series_name, result.sample_interval)
 
         # Unregistered + auto_register=False surfaces as UnknownSeries here.
-        run_id = write_forecast_run(
-            conn,
-            config,
+        return store.write_forecast_run(
             series=self._series_name,
             model=self._model_name(workflow),
             model_version=self._model_version,
@@ -302,8 +298,6 @@ class ForecastStoreCallback(ForecastingCallback):
             params=params,
             points=points,
         )
-        conn.commit()  # run + points: one transaction
-        return run_id
 
     @staticmethod
     def _quantile_column_map(result, config: StoreConfig) -> dict[str, str]:  # noqa: ANN001

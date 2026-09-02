@@ -86,7 +86,7 @@ def main() -> int:
     )
 
     provider = TimescaleTargetProvider(
-        dsn=args.dsn,
+        source=args.dsn,
         targets=[target],
         measurement_series={target.name: load_series},
         predictor_series={target.name: weather_series},

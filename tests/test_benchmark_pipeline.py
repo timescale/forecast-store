@@ -145,7 +145,7 @@ def _make_provider():
     from forecast_store.integrations.openstef_beam import TimescaleTargetProvider
 
     return TimescaleTargetProvider(
-        dsn=DSN,
+        source=DSN,
         targets=[_make_target()],
         measurement_series={"bm1": LOAD},
         predictor_series={"bm1": {c: _weather_series(c) for c in WEATHER_COLS}},

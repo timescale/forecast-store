@@ -260,7 +260,7 @@ def main() -> int:
         predictor_series[entry["name"]] = weather_series
 
     provider = TimescaleTargetProvider(
-        dsn=args.dsn,
+        source=args.dsn,
         targets=targets,
         measurement_series=measurement_series,
         predictor_series=predictor_series,

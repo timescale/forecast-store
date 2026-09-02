@@ -225,7 +225,7 @@ def test_store_binding_schema_conflict():
     with pytest.raises(ValueError, match="conflicts"):
         ForecastStoreCallback(DSN, LOAD, store_config=StoreConfig(schema="fs_a"), schema="fs_b")
     # Agreeing spellings are fine, and an explicit config is never re-read.
-    assert StoreReader(DSN, StoreConfig(schema="fs_a"), schema="fs_a")._binding.schema == "fs_a"
+    assert StoreReader(DSN, StoreConfig(schema="fs_a"), schema="fs_a")._schema == "fs_a"
 
 
 def test_forecast_feed_as_covariate(seeded):

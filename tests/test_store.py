@@ -103,7 +103,7 @@ def test_store_live():
             store.register_series(SERIES, "1 hour")
             store.write_actuals(SERIES, [(T0 - H, 1.0)])
             store.write_predictors(SERIES, [(T0, 2.0)], available_at=T0 - H)
-            run_id = store.write_forecast_run(
+            run_id = store.write_forecast(
                 series=SERIES, model="m", run_name=RUN, available_at=T0 - H,
                 points=[(T0, {"q50": 3.0})],
             )

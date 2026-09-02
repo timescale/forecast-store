@@ -88,7 +88,7 @@ def test_forecast_asof_live():
     try:
         with Store.connect(DSN, CFG) as store:
             store.register_series(NAME, H)
-            first = store.write_forecast_run(
+            first = store.write_forecast(
                 series=NAME, model="m", run_name="asof/a", available_at=T0 - 2 * H,
                 points=[(T0, {"q50": 1.0})],
             )
@@ -99,11 +99,11 @@ def test_forecast_asof_live():
                 cur.execute("SELECT clock_timestamp()")
                 between = cur.fetchone()[0]
             store.conn.commit()
-            second = store.write_forecast_run(
+            second = store.write_forecast(
                 series=NAME, model="m", run_name="asof/b", available_at=T0 - H,
                 points=[(T0, {"q50": 2.0})],
             )
-            store.write_forecast_run(
+            store.write_forecast(
                 series=NAME, model="m", run_name="asof/a", available_at=T0 - H,
                 table="asof_ws", points=[(T0, {"q50": 9.0})],
             )

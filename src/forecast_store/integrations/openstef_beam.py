@@ -298,7 +298,7 @@ class TimescaleBenchmarkStorage(BenchmarkStorage):
                     )
                     for ts, row in event_frame.iterrows()
                 ]
-                store.write_forecast_run(
+                store.write_forecast(
                     table=self._forecast_table,
                     series=self._series(target),
                     model=self._model,

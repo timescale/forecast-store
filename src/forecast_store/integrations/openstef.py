@@ -298,7 +298,7 @@ class ForecastStoreCallback(ForecastingCallback):
             store.register_series(self._series_name, result.sample_interval)
 
         # Unregistered + auto_register=False surfaces as UnknownSeries here.
-        return store.write_forecast_run(
+        return store.write_forecast(
             series=self._series_name,
             table=self._table,
             model=self._model_name(workflow),

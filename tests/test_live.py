@@ -180,7 +180,7 @@ def test_python_resolvers_and_series_refs(conn):
     from forecast_store.config import StoreConfig
     from forecast_store.read import read_context_series
     from forecast_store.series import UnknownSeries, get_series_id, register_series
-    from forecast_store.write import write_forecast_run
+    from forecast_store.write import write_forecast
 
     config = StoreConfig()
     sid = register_series(conn, config, "smoke_test", timedelta(minutes=15))
@@ -192,10 +192,10 @@ def test_python_resolvers_and_series_refs(conn):
     # Away from the other tests' target window; run label shared for cleanup.
     target = T0 + timedelta(days=2)
     common = dict(model="constant", run_name="smoke", points=[(target, {"q50": 1.0})])
-    by_name = write_forecast_run(
+    by_name = write_forecast(
         conn, config, series="smoke_test", available_at=SIM_AVAILABLE, **common
     )
-    by_id = write_forecast_run(
+    by_id = write_forecast(
         conn, config, series=sid, available_at=SIM_AVAILABLE + timedelta(hours=1),
         **{**common, "points": [(target, {"q50": 2.0})]},
     )
@@ -215,10 +215,10 @@ def test_python_resolvers_and_series_refs(conn):
         assert [v for _, _, v in rows] == [2.0]
 
     with pytest.raises(UnknownSeries):
-        write_forecast_run(
+        write_forecast(
             conn, config, series="smoke_test_typo", available_at=SIM_AVAILABLE, **common
         )
     conn.rollback()
     with pytest.raises(TypeError, match="registered name"):
-        write_forecast_run(conn, config, series=1.5, available_at=SIM_AVAILABLE, **common)
+        write_forecast(conn, config, series=1.5, available_at=SIM_AVAILABLE, **common)
     conn.rollback()

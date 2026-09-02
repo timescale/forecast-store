@@ -40,7 +40,7 @@ from forecast_store.read import (
     read_versioned_series,
 )
 from forecast_store.series import SeriesRef, get_series_id, register_series
-from forecast_store.write import Point, write_actuals, write_forecast_run, write_predictors
+from forecast_store.write import Point, write_actuals, write_forecast, write_predictors
 
 
 class _Pool(Protocol):
@@ -157,7 +157,7 @@ class Store:
 
     # -- writes ------------------------------------------------------------
 
-    def write_forecast_run(
+    def write_forecast(
         self,
         *,
         series: SeriesRef,
@@ -171,8 +171,8 @@ class Store:
         context_end: datetime | None = None,
         params: Mapping[str, Any] | None = None,
     ) -> UUID:
-        """Run + points; see :func:`forecast_store.write.write_forecast_run`."""
-        return write_forecast_run(
+        """One forecast (a run + its points); see :func:`forecast_store.write.write_forecast`."""
+        return write_forecast(
             self.conn, self.config,
             series=series, model=model, points=points, available_at=available_at,
             table=table, model_version=model_version, run_name=run_name,

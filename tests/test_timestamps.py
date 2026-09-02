@@ -12,7 +12,7 @@ from forecast_store.ddl import table_configs
 from forecast_store.errors import ForecastStoreError
 from forecast_store.read import read_context_series, read_versioned_series
 from forecast_store.timestamps import aware
-from forecast_store.write import _normalize, write_actuals, write_forecast_run, write_predictors
+from forecast_store.write import _normalize, write_actuals, write_forecast, write_predictors
 
 DSN = os.environ.get("FORECAST_STORE_TEST_DSN")
 
@@ -70,9 +70,9 @@ def test_points_are_checked_field_by_field():
 
 def test_writes_refuse_before_touching_the_database():
     with pytest.raises(NaiveTimestamp, match="available_at"):
-        write_forecast_run(_NoDB(), CFG, series="s", model="m", points=[], available_at=NAIVE_T)
+        write_forecast(_NoDB(), CFG, series="s", model="m", points=[], available_at=NAIVE_T)
     with pytest.raises(NaiveTimestamp, match="context_end"):
-        write_forecast_run(
+        write_forecast(
             _NoDB(), CFG, series="s", model="m", points=[], available_at=UTC_T,
             context_end=NAIVE_T,
         )

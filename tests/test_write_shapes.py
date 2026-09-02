@@ -92,7 +92,7 @@ def test_point_shape_live():
     from forecast_store.provision import provision
     from forecast_store.read import read_context_series, read_versioned_series
     from forecast_store.series import register_series
-    from forecast_store.write import write_actuals, write_forecast_run, write_predictors
+    from forecast_store.write import write_actuals, write_forecast, write_predictors
 
     config = StoreConfig().with_tables(VENDOR)
     provision(DSN, config)
@@ -152,7 +152,7 @@ def test_point_shape_live():
                 write_predictors(conn, config, name, [(T0 + 5 * H, 1.0)])
             conn.rollback()
             with pytest.raises(ValueError, match="knowledge time is the run's"):
-                write_forecast_run(
+                write_forecast(
                     conn, config, series=name, model="m", available_at=T0,
                     points=[(T0, {"q50": 1.0, "available_at": T0})],
                 )

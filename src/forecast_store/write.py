@@ -47,7 +47,7 @@ __all__ = [
     "MisalignedTimestamp",
     "Point",
     "write_actuals",
-    "write_forecast_run",
+    "write_forecast",
     "write_predictors",
 ]
 
@@ -117,7 +117,7 @@ def _stated(values: Mapping[str, Any], column: str, default: datetime | None) ->
     return default if stated is None else stated
 
 
-def write_forecast_run(
+def write_forecast(
     conn: Any,
     config: StoreConfig,
     *,
@@ -132,7 +132,7 @@ def write_forecast_run(
     context_end: datetime | None = None,
     params: Mapping[str, Any] | None = None,
 ) -> UUID:
-    """Insert a run and its forecast points; returns the run_id.
+    """Write one forecast — a run row plus its points, one knowledge time; returns the run_id.
 
     ``series`` is the registered name or ``series_id``. ``table`` names the
     forecast-log instance (validated against the store's own ``store_tables``

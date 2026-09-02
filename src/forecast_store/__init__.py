@@ -54,7 +54,7 @@ from forecast_store.read import (
 )
 from forecast_store.series import SeriesRef, get_series_id, register_series
 from forecast_store.store import ConnectionSource, Store
-from forecast_store.write import Point, write_actuals, write_forecast_run, write_predictors
+from forecast_store.write import Point, write_actuals, write_forecast, write_predictors
 
 __version__ = "0.0.1.dev0"
 
@@ -86,7 +86,7 @@ __all__ = [
     "get_series_id",
     "SeriesRef",
     # writes
-    "write_forecast_run",
+    "write_forecast",
     "write_actuals",
     "write_predictors",
     "Point",

@@ -138,7 +138,7 @@ def test_workspace_instance_live():
     from forecast_store.provision import provision
     from forecast_store.read import read_context_series
     from forecast_store.series import register_series
-    from forecast_store.write import write_forecast_run
+    from forecast_store.write import write_forecast
 
     config = StoreConfig().with_tables(
         ForecastLogSpec("bt_workspace", quantile_band=("0.1", "0.5", "0.9"))
@@ -154,7 +154,7 @@ def test_workspace_instance_live():
             loaded = StoreConfig.from_store(conn)
             assert loaded.table("bt_workspace") == config.table("bt_workspace")
             sid = register_series(conn, config, "mi_smoke", timedelta(hours=1))
-            write_forecast_run(
+            write_forecast(
                 conn,
                 config,
                 table="bt_workspace",
@@ -168,7 +168,7 @@ def test_workspace_instance_live():
 
             # Canonical column set is rejected by the instance's declaration.
             with pytest.raises(ValueError, match="not declared by 'bt_workspace'"):
-                write_forecast_run(
+                write_forecast(
                     conn, config, table="bt_workspace", series=sid,
                     model="constant", available_at=sim,
                     points=[(t0, {"q05": 1.0})],

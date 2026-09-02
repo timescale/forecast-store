@@ -62,7 +62,7 @@ from forecast_store import Store
 
 with Store.connect(DSN) as store:            # a DSN or a pool; declaration read from the store
     store.register_series("site42/load", "15 minutes")   # get-or-create
-    store.write_forecast_run(
+    store.write_forecast(
         series="site42/load",                 # a registered name, or its series_id
         model="my-model", run_name="prod/site42",
         available_at=now,                     # the knowledge time, recorded
@@ -74,7 +74,7 @@ with Store.connect(DSN) as store:            # a DSN or a pool; declaration read
 # the block is the unit of work: committed on exit, rolled back on exception
 ```
 
-`Store` is sugar over the module functions — `write_forecast_run(conn, config, ...)` and
+`Store` is sugar over the module functions — `write_forecast(conn, config, ...)` and
 friends take a connection and a declaration you manage, and never commit. Bind a connection
 you already hold (or a pool checkout) with `Store(conn, config)`; `StoreConfig.from_store(conn)`
 reads the declaration a store was provisioned with.

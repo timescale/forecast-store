@@ -232,13 +232,13 @@ def test_forecast_feed_as_covariate(seeded):
     """Our own forecasts consumed as another model's input (spec §6.2): read
     from the forecast log, as-of vintage selection, optional producer pin."""
     from forecast_store.integrations.openstef import ForecastFeed, StoreReader
-    from forecast_store.write import write_forecast_run
+    from forecast_store.write import write_forecast
 
     conn, config = seeded
     horizon_ts = [ASOF + i * HOUR for i in range(24)]
 
     def run(value, available_at, run_name=RUN_NAME):
-        return write_forecast_run(
+        return write_forecast(
             conn, config,
             series=LOAD, model="constant", run_name=run_name,
             available_at=available_at,

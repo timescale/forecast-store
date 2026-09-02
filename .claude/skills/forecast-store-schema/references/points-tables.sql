@@ -42,7 +42,7 @@ ORDER BY f.series_id, f.target_time, f.available_at DESC;
 
 INSERT INTO forecast.store_tables (table_name, convention_version, config)
 VALUES
-    ('forecasts', '0.4.0', '{"enforcement": "monitor", "has_mean": true, "has_runs": true, "knowledge_column": "available_at", "quantile_band": ["0.05", "0.1", "0.3", "0.5", "0.7", "0.9", "0.95"], "role": "own_forecasts", "value_columns": ["mean", "q05", "q10", "q30", "q50", "q70", "q90", "q95"]}'::jsonb)
+    ('forecasts', '0.4.0', '{"enforcement": "monitor", "has_mean": true, "has_runs": true, "knowledge_column": "available_at", "quantile_band": ["0.05", "0.1", "0.3", "0.5", "0.7", "0.9", "0.95"], "role": "forecasts", "value_columns": ["mean", "q05", "q10", "q30", "q50", "q70", "q90", "q95"]}'::jsonb)
 ON CONFLICT (table_name) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS forecast.predictors (
@@ -159,7 +159,7 @@ ORDER BY f.series_id, f.target_time, f.available_at DESC;
 
 INSERT INTO forecast.store_tables (table_name, convention_version, config)
 VALUES
-    ('forecasts_deciles', '0.4.0', '{"enforcement": "monitor", "has_mean": false, "has_runs": true, "knowledge_column": "available_at", "quantile_band": ["0.1", "0.3", "0.5", "0.7", "0.9"], "role": "own_forecasts", "value_columns": ["q10", "q30", "q50", "q70", "q90"]}'::jsonb)
+    ('forecasts_deciles', '0.4.0', '{"enforcement": "monitor", "has_mean": false, "has_runs": true, "knowledge_column": "available_at", "quantile_band": ["0.1", "0.3", "0.5", "0.7", "0.9"], "role": "forecasts", "value_columns": ["q10", "q30", "q50", "q70", "q90"]}'::jsonb)
 ON CONFLICT (table_name) DO NOTHING;
 
 SELECT create_hypertable('forecast.forecasts_deciles', 'target_time', if_not_exists => TRUE, migrate_data => TRUE);

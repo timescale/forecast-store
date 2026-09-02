@@ -65,8 +65,8 @@ def _check_name(name: str) -> None:
 
 @dataclass(frozen=True)
 class ForecastLogSpec:
-    """A forecast log (spec §7.2, role ``own_forecasts``): our own forecasts
-    with run provenance — value columns from its band (and ``mean``), its own
+    """A forecast log (spec §7.2, role ``forecasts``): forecasts that carry
+    run provenance — value columns from its band (and ``mean``), its own
     retention/compression policies, sharing ``runs`` with every other log.
     ``forecasts`` is the conventional one; a backtest workspace kept apart
     from production history is the prototypical second. Band levels may be

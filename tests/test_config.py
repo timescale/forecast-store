@@ -89,3 +89,9 @@ def test_declaration_rules():
         StoreConfig(tables=("forecasts",))  # type: ignore[arg-type]
     with pytest.raises(InvalidDeclaration, match="no points tables"):
         config_from_tables({"evaluation_runs": {"role": "evaluation"}})
+
+
+def test_former_role_name_points_at_the_migration():
+    legacy = {"forecasts": {"role": "own_forecasts", "quantile_band": ["0.5"], "has_mean": True}}
+    with pytest.raises(InvalidDeclaration, match="own_forecasts.*now 'forecasts'.*UPDATE"):
+        config_from_tables(legacy)

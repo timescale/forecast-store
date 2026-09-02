@@ -277,7 +277,7 @@ CREATE TABLE forecast.store_tables (
     table_name         text PRIMARY KEY,
     convention_version text NOT NULL,     -- per table: migrations move one table at a time
     config             jsonb NOT NULL,
-    -- e.g. {"role": "own_forecasts",
+    -- e.g. {"role": "forecasts",
     --       "quantile_band": [0.05, 0.1, 0.3, 0.5, 0.7, 0.9, 0.95],
     --       "has_mean": true,
     --       "enforcement": "monitor"}

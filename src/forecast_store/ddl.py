@@ -40,7 +40,7 @@ def _instances(config: StoreConfig) -> list[dict]:
     def forecast_instance(name: str, band, has_mean: bool) -> dict:
         return {
             "name": name,
-            "role": "own_forecasts",
+            "role": "forecasts",
             "shape": "forecast",
             "band": band,
             "value_columns": list(band_columns(band, has_mean)),
@@ -355,7 +355,7 @@ BEGIN
                coalesce((st.config->>'has_target_time_observed')::boolean, false)
                    AS observed
         FROM {s}.store_tables st
-        WHERE st.config->>'role' IN ('actuals', 'predictors', 'own_forecasts')
+        WHERE st.config->>'role' IN ('actuals', 'predictors', 'forecasts')
           AND to_regclass(format('{s}.%I', st.table_name)) IS NOT NULL
         ORDER BY st.table_name
     LOOP
@@ -448,9 +448,16 @@ def config_from_tables(
         role = d.get("role")
         if name in RESERVED_TABLES or role == "evaluation":
             continue
-        if role == "own_forecasts":
+        if role == "forecasts":
             tables.append(
                 ForecastLogSpec(name, quantile_band=band(d), has_mean=bool(d["has_mean"]))
+            )
+        elif role == "own_forecasts":  # the role's former name (origin, not provenance)
+            raise InvalidDeclaration(
+                f"store_tables declares {name!r} with the former role name 'own_forecasts', "
+                "now 'forecasts'. Migrate the store with: UPDATE <schema>.store_tables "
+                "SET config = jsonb_set(config, '{role}', '\"forecasts\"') "
+                "WHERE config->>'role' = 'own_forecasts'; then re-provision."
             )
         elif role == "predictors":
             tables.append(

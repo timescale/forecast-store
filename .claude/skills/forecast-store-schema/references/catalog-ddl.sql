@@ -132,7 +132,7 @@ BEGIN
                coalesce((st.config->>'has_target_time_observed')::boolean, false)
                    AS observed
         FROM forecast.store_tables st
-        WHERE st.config->>'role' IN ('actuals', 'predictors', 'own_forecasts')
+        WHERE st.config->>'role' IN ('actuals', 'predictors', 'forecasts')
           AND to_regclass(format('forecast.%I', st.table_name)) IS NOT NULL
         ORDER BY st.table_name
     LOOP

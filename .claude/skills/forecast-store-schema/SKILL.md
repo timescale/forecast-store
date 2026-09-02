@@ -61,7 +61,7 @@ a role under any names (e.g. a second forecast table with a different quantile b
   value became fixed.
 - **`forecast.predictors`** (role `predictors`) — predictions from an opaque producer
   (e.g. a vendor's weather feed): all anyone knows is (target, publication time, value).
-- **`forecast.forecasts`** (role `own_forecasts`) — your own predictions, each tied to a
+- **`forecast.forecasts`** (role `forecasts`) — run-bearing predictions, yours or any with provenance, each tied to a
   `forecast.runs` row recording the model, parameters, and input window that produced it.
 
 Two metadata tables make the store self-describing: **`forecast.series`** (the registry:

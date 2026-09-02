@@ -43,7 +43,7 @@ def test_extra_instances_generate_everything():
 
     configs = table_configs(config)
     assert configs["bt_workspace"] == {
-        "role": "own_forecasts",
+        "role": "forecasts",
         "value_columns": ["mean", "q10", "q50", "q90"],
         "knowledge_column": "available_at",
         "has_runs": True,

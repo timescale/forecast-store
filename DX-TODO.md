@@ -203,12 +203,46 @@ owns the transaction. Items are ranked by impact; check them off as they land.
   `standard()` replaces `from_levels` [yes]; require ≥1 table [yes]; do
   before 11 [yes].
 
+- [x] **13. The forecast-log role is named for origin, not provenance.** *(done before 11)*
+  The persisted role is `own_forecasts` — "ours, not the vendors'" — while
+  the spec's rule (§6.2) is "provenance, not origin": a run-bearing external
+  forecast belongs in the forecast log, our own bare vintages in `predictors`.
+  The other two roles (`actuals`, `predictors`) are parallel and role-shaped;
+  this one is the odd one out, and item 11 would put it into hand-written
+  files.
+  - [x] Renamed the role to `forecasts` (parallel to the other two, matches the default table name and `ForecastLogSpec`)
+  - [x] Generator role string, sweep role list, `config_from_tables` (a store still carrying `own_forecasts` gets an error that quotes the migration), class docstring, spec example, skill references
+  - [x] Existing stores: one statement, in the commit message and applied to the test store —
+    `UPDATE forecast.store_tables SET config = jsonb_set(config, '{role}', '"forecasts"') WHERE config->>'role' = 'own_forecasts';`
+    then re-provision to regenerate the sweep
+
 - [ ] **11. CLI cannot express the full config.**
   No `extra_tables`, `enforcement`, or `append_only_guard`; no config-file input;
   no way to register a series without hand-written SQL.
   - Add `--config path.toml` (or YAML) to `ddl` and `provision`
   - Add `register-series` subcommand
   - Add `describe` subcommand that loads the stored declaration (pairs with item 4) and reports drift
+
+  **Plan (2026-09-02, awaiting go) — YAML only:** the file is the flat model —
+  store-level `schema`/`enforcement`/`append_only_guard` plus a `tables` list
+  with `name`, `role` (persisted vocabulary: `own_forecasts` | `predictors` |
+  `actuals`) and the role's options; levels as floats or strings (canonicalized
+  to exact Decimals). YAML fits the audience (OpenSTEF targets are YAML,
+  openstef-beam requires PyYAML, the repo's `foundation` extra and ingest
+  script already use it) and `describe` emits with `yaml.safe_dump(...,
+  sort_keys=False)` — no emitter to write. `StoreConfig.from_dict`/`to_dict`
+  stay format-agnostic. Guard the YAML footgun: a bare `on`/`yes`/`no` table
+  name parses as a bool → reject non-string names with a "quote it" message.
+  `--config` excludes the trio flags; `--schema` may override the file.
+  `register-series NAME --interval ... [--timezone --unit --description
+  --metadata JSON]` prints the id. `describe --dsn` prints the store's
+  declaration as re-provisionable YAML (header: convention version,
+  TimescaleDB, series count); `describe --config FILE` is a drift check (per
+  table: differs / missing from store / not in file; store switches), exit 1
+  on drift, sharing one comparison helper with `provision`. Two commits: file
+  format + `--config`; then the two subcommands.
+  Open: PyYAML as a core dependency [recommended] vs lazily imported under a
+  `cli` extra.
 
 ## Small fixes
 

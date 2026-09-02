@@ -241,7 +241,8 @@ def test_observed_instance_and_grid_validation_live():
             sid = register_series(conn, config, "obs_smoke_series", timedelta(minutes=15))
             write_actuals(
                 conn, config, sid,
-                [(t0, 1.0, t0 + jitter), (t0 + timedelta(minutes=15), 2.0, None)],
+                [(t0, {"value": 1.0, "target_time_observed": t0 + jitter}),
+                 (t0 + timedelta(minutes=15), 2.0)],  # scalar: the single value column
                 table="obs_smoke",
             )
             conn.commit()
@@ -263,7 +264,9 @@ def test_observed_instance_and_grid_validation_live():
 
             # Observed timestamps on an instance that never declared the column.
             with pytest.raises(ValueError, match="target_time_observed"):
-                write_actuals(conn, config, sid, [(t0, 1.0, t0)], table="actuals")
+                write_actuals(
+                    conn, config, sid, [(t0, {"value": 1.0, "target_time_observed": t0})]
+                )
             conn.rollback()
 
             # Raw SQL sneaks an out-of-bucket observation past the SDK;

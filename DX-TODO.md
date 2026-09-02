@@ -35,13 +35,60 @@ owns the transaction. Items are ranked by impact; check them off as they land.
 
 ## Needs a short design note first
 
-- [ ] **3. Three write functions, three `points` shapes.**
+- [x] **3. Three write functions, three `points` shapes.**
   Forecasts: `(ts, {col: value})`. Actuals: `(ts, value)` or
   `(ts, value, observed)` depending on the table's stored declaration.
   Predictors: `(ts, available_at, value)`. The arity-by-declaration rule only
   fails at runtime.
-  - Decide: small typed row classes vs. one keyword-dict shape across all three
-  - Validate tuple arity up front with a clear error naming the table
+
+  **Evidence gathered (2026-09-02):**
+  - `write_actuals` cannot take per-row `available_at`; two callers drop to raw
+    SQL for exactly that (`tests/test_benchmark_pipeline.py` seed INSERT,
+    `scripts/ingest_liander.py` COPY).
+  - `write_predictors` has no `table=` and hardcodes the `value` column, so an
+    extra predictor instance (`PredictorLogSpec`, incl. a probabilistic band) is
+    unwritable through the SDK.
+  - Predictors require `available_at` per point even when one vendor run shares
+    a single publication time.
+  - DDL: forecasts `available_at NOT NULL` (from the run); predictors
+    `NOT NULL`, no default; actuals `NOT NULL DEFAULT now()`.
+
+  **Done (recommendations accepted, 2026-09-02):** generalized the forecast
+  shape to all three writes; rules below are as implemented (`write.py`,
+  tests in `tests/test_write_shapes.py`). A point is `(target_time, {column: value})`; `available_at`
+  is a column like any other, with a call-level default; the table's stored
+  declaration decides whether it is required, defaulted, or fixed.
+  1. `Point = tuple[datetime, Mapping[str, object] | float | None]`. A bare
+     scalar is sugar for `{"value": x}`, accepted only when the table declares
+     exactly one value column.
+  2. Writable keys per table = declared `value_columns` + the knowledge column
+     (`available_at`) + `target_time_observed` where declared. Unknown keys
+     fail before any INSERT, naming the table and its writable columns.
+  3. `available_at` resolution by declaration: forecast logs — from the run's
+     kwarg, a per-point key is rejected (a run has one knowledge time);
+     actuals — per-point key, else call-level kwarg, else the column default
+     (arrival measured); predictors — per-point key, else call-level kwarg,
+     else error (publication must be stated).
+  4. `write_predictors` gains `table="predictors"` and validates the declared
+     role, as `write_actuals` already does. The two become mirror images:
+     `(conn, config, series, points, *, available_at=None, table=...)`.
+  5. `points` accepts any iterable (materialized once), so
+     `df.to_dict("index").items()` works directly.
+  6. Migration (pre-release, breaking): predictor 3-tuples ->
+     `(ts, {"available_at": a, "value": v})` or a batch `available_at=`;
+     actuals observed 3-tuples -> `(ts, {"value": v, "target_time_observed": o})`.
+     11 call sites in tests/scripts/README; the benchmark seed moves onto the
+     SDK; the ingest COPY stays (throughput).
+  - Alternatives considered: flat records `{"target_time": .., ..}` (most
+    SQL-like, pandas `to_dict("records")`, but no scalar sugar and the grid
+    key is just another field); typed row classes (IDE-friendly, but three
+    more imports, no unification, construction cost on large ingests — can be
+    layered on later as sugar that produces mappings); one generic
+    `write_points(table=)` replacing actuals/predictors (dispatches on role
+    anyway; role-named functions read better at call sites).
+  - Non-goals: a bulk COPY path (separate item if wanted).
+  - Decisions taken: (a) the `(ts, {col: val})` mapping shape; (b) three
+    role-named functions kept; (c) scalar sugar `(ts, 1.0)` kept.
 
 - [ ] **5. Connection handling is mixed.**
   `provision` takes a DSN and opens its own connection; reads/writes take a

@@ -1,32 +1,51 @@
-"""The forecast write path: one run + its points, one transaction.
+"""The write path: points onto the declared grid, one transaction.
 
 Callers own the transaction (spec/skill rule: a run row and its points commit
-together, so the frozen-backtest pin can never split a run in half). This
-function never commits.
+together, so the frozen-backtest pin can never split a run in half). Nothing
+here commits.
+
+One point shape for every table: ``(target_time, values)``, where ``values``
+maps declared column names to values — ``mean``/``q50``/... on a forecast
+log, ``value`` (plus a band, if declared) on actuals and predictors — and may
+carry the knowledge column ``available_at`` and, where declared,
+``target_time_observed``. A bare scalar is shorthand for the table's single
+value column. The table's stored declaration decides what is writable and
+how the knowledge time resolves:
+
+- forecast logs: ``available_at`` is the run's; a per-point key is rejected
+  (one run, one knowledge time — spec §4.1);
+- actuals: per-point key, else the call-level ``available_at``, else the
+  column default — arrival is *measured* (spec §6.1);
+- predictors: per-point key, else the call-level ``available_at``, else an
+  error — publication is a *claim* and must be stated (spec §6.2).
 
 Every write takes a *series reference* — the registered name or the
 ``series_id`` (see :mod:`forecast_store.series`) — and validates
 ``target_time`` against the registry's declared ``sample_interval`` (spec
 §5.1: the shared bucket grid is enforced at the SDK write path; the generated
-``data_quality_sweep`` is the backstop for raw-SQL writers). Vintage times
-(``available_at``) are not grid-bound.
+``data_quality_sweep`` is the backstop for raw-SQL writers). Knowledge times
+are not grid-bound.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from datetime import datetime, timedelta, timezone
-from typing import Any, Mapping, Sequence
+from typing import Any
 from uuid import UUID
 
 from forecast_store.config import StoreConfig
 from forecast_store.series import SeriesRef, _lookup
 
-Point = tuple[datetime, Mapping[str, float | None]]
+#: ``(target_time, values)``: ``values`` maps declared columns to values, or is
+#: a bare scalar for a table with exactly one value column.
+Point = tuple[datetime, Mapping[str, Any] | float | None]
 
 #: time_bucket's default origin (2000-01-03, a Monday); sub-day intervals that
 #: divide a day are origin-insensitive, this keeps the rest exact.
 _GRID_ORIGIN = datetime(2000, 1, 3, tzinfo=timezone.utc).timestamp()
 _UNCHECKABLE_SECONDS = 28 * 86400  # month-sized intervals have no fixed stride
+_OBSERVED = "target_time_observed"
 
 
 class MisalignedTimestamp(ValueError):
@@ -52,13 +71,68 @@ def _check_grid(interval: timedelta, series: SeriesRef, timestamps) -> None:
             )
 
 
+def _normalize(
+    table: str,
+    declaration: Mapping[str, Any],
+    points: Iterable[Point],
+    *,
+    per_point_knowledge: bool,
+) -> tuple[list[str], list[tuple[datetime, dict[str, Any]]]]:
+    """Validate points against the table's stored declaration.
+
+    Returns the writable columns actually used (declaration order) and the
+    points with scalars expanded to mappings. Nothing has touched the
+    database when this raises. ``per_point_knowledge`` says whether the
+    knowledge column is writable per point (actuals, predictors) or fixed by
+    the run (forecast logs).
+    """
+    value_columns = list(declaration["value_columns"])
+    knowledge_col = declaration["knowledge_column"]
+    writable = list(value_columns)
+    if per_point_knowledge:
+        writable.append(knowledge_col)
+    if declaration.get("has_target_time_observed"):
+        writable.append(_OBSERVED)
+
+    rows: list[tuple[datetime, dict[str, Any]]] = []
+    used: set[str] = set()
+    for ts, values in points:
+        if not isinstance(values, Mapping):
+            if len(value_columns) != 1:
+                raise ValueError(
+                    f"{table!r} declares {len(value_columns)} value columns "
+                    f"{value_columns}: pass a mapping of column -> value, not a bare scalar"
+                )
+            values = {value_columns[0]: values}
+        unknown = set(values) - set(writable)
+        if unknown:
+            if knowledge_col in unknown and not per_point_knowledge:
+                raise ValueError(
+                    f"{table!r} is a forecast log: its knowledge time is the run's "
+                    f"available_at, not a per-point column (spec §4.1)"
+                )
+            raise ValueError(
+                f"columns {sorted(unknown)} are not declared by {table!r} "
+                f"(writable columns: {writable})"
+            )
+        used.update(values)
+        rows.append((ts, dict(values)))
+    return [c for c in writable if c in used], rows
+
+
+def _stated(values: Mapping[str, Any], column: str, default: datetime | None) -> datetime | None:
+    """Per-point knowledge time, else the call-level default (None = unstated)."""
+    stated = values.get(column)
+    return default if stated is None else stated
+
+
 def write_forecast_run(
     conn: Any,
     config: StoreConfig,
     *,
     series: SeriesRef,
     model: str,
-    points: Sequence[Point],
+    points: Iterable[Point],
     available_at: datetime,
     table: str = "forecasts",
     model_version: str | None = None,
@@ -70,36 +144,28 @@ def write_forecast_run(
     """Insert a run and its forecast points; returns the run_id.
 
     ``series`` is the registered name or ``series_id``. ``table`` names the
-    forecast-log instance (validated against the store's
-    own ``store_tables`` declaration — it must exist and carry run
-    provenance); ``runs`` is shared across instances. ``points`` maps declared
-    value-column names (``mean``, ``q50``, ...) to values; undeclared columns
-    are rejected, absent ones stay NULL. ``recorded_at`` is never written — it
-    is system time (spec §4.1).
+    forecast-log instance (validated against the store's own ``store_tables``
+    declaration — it must exist and carry run provenance); ``runs`` is shared
+    across instances. Each point's values map declared value columns
+    (``mean``, ``q50``, ...) to values — absent columns stay NULL, undeclared
+    ones are rejected — and ``available_at`` is the run's knowledge time for
+    every point (a per-point key is rejected). ``recorded_at`` is never
+    written — it is system time (spec §4.1).
     """
     from psycopg.types.json import Jsonb
 
     from forecast_store.read import _table_declaration
 
     s = config.schema
-    used_cols: set[str] = set()
-    for _, values in points:
-        used_cols.update(values)
-
     with conn.cursor() as cur:
         series_id, interval = _lookup(cur, s, series)
         declaration = _table_declaration(cur, s, table)
         if not declaration.get("has_runs"):
             raise ValueError(f"{table!r} is not a forecast log (no run provenance)")
-        declared = declaration["value_columns"]
-        unknown = used_cols - set(declared)
-        if unknown:
-            raise ValueError(
-                f"columns {sorted(unknown)} are not declared by {table!r} "
-                f"(value columns: {declared})"
-            )
-        _check_grid(interval, series, (ts for ts, _ in points))
-        cols = [c for c in declared if c in used_cols]
+        cols, rows = _normalize(table, declaration, points, per_point_knowledge=False)
+        _check_grid(interval, series, (ts for ts, _ in rows))
+        knowledge_col = declaration["knowledge_column"]
+
         cur.execute(
             f"INSERT INTO {s}.runs "
             "(run_name, model, model_version, available_at, context_start, context_end, params) "
@@ -120,11 +186,11 @@ def write_forecast_run(
         placeholders = ", ".join(["%s"] * (4 + len(cols)))
         cur.executemany(
             f"INSERT INTO {s}.{table} "
-            f"(run_id, series_id, target_time, available_at{col_sql}) "
+            f"(run_id, series_id, target_time, {knowledge_col}{col_sql}) "
             f"VALUES ({placeholders})",
             [
                 (run_id, series_id, ts, available_at, *[values.get(c) for c in cols])
-                for ts, values in points
+                for ts, values in rows
             ],
         )
     return run_id
@@ -134,22 +200,23 @@ def write_actuals(
     conn: Any,
     config: StoreConfig,
     series: SeriesRef,
-    points: Sequence[tuple],
+    points: Iterable[Point],
     *,
     available_at: datetime | None = None,
     table: str = "actuals",
 ) -> None:
     """Ingest observations. Idempotent (``ON CONFLICT DO NOTHING``).
 
-    ``series`` is the registered name or ``series_id``. ``table`` names an
-    actuals-role instance; its stored declaration supplies
-    the tier and optional columns. Points are ``(target_time, value)`` — or
-    ``(target_time, value, target_time_observed)`` on instances that declare
-    the observed column (spec §6.1; the third element may be None).
+    ``series`` is the registered name or ``series_id``; ``table`` names an
+    actuals-role instance whose stored declaration supplies the tier and
+    optional columns. Points are ``(target_time, value)`` or
+    ``(target_time, {"value": v, ...})`` with an optional ``available_at``
+    and — on instances that declare it (spec §6.1) — ``target_time_observed``.
 
-    ``available_at=None`` measures arrival (column default); an explicit
-    value is the backfill path — a written claim (spec §6.1), legal on both
-    shapes (a single-belief backfill may state genuine historical arrival).
+    Knowledge time: a per-point ``available_at`` wins, else the call-level
+    one, else the column default measures arrival. Any stated value is the
+    backfill path — a written claim (spec §6.1), legal on both shapes (a
+    single-belief backfill may state genuine historical arrival).
 
     Idempotency follows the PK switch (spec §6.1): on single-belief instances
     an identical re-delivery is a silent no-op and a *conflicting* value
@@ -169,29 +236,14 @@ def write_actuals(
         declaration = _table_declaration(cur, s, table)
         if declaration.get("role") != "actuals":
             raise ValueError(f"{table!r} is not an actuals instance")
-        revisions = declaration.get("revisions", True)
-        has_observed = bool(declaration.get("has_target_time_observed"))
-        if any(len(p) > 2 for p in points) and not has_observed:
-            raise ValueError(
-                f"{table!r} does not declare target_time_observed (spec §6.1)"
-            )
-        _check_grid(interval, series, (p[0] for p in points))
+        cols, rows = _normalize(table, declaration, points, per_point_knowledge=True)
+        _check_grid(interval, series, (ts for ts, _ in rows))
+        if not rows:
+            return
+        knowledge_col = declaration["knowledge_column"]
+        data_cols = [c for c in cols if c != knowledge_col]
 
-        cols = ["series_id", "target_time"]
-        row_tail: list[Any] = []
-        if has_observed:
-            cols.append("target_time_observed")
-        if available_at is not None:
-            cols.append("available_at")
-            row_tail = [available_at]
-        cols.append("value")
-
-        def row(p: tuple) -> tuple:
-            ts, value = p[0], p[1]
-            observed = ([p[2] if len(p) > 2 else None]) if has_observed else []
-            return (series_id, ts, *observed, *row_tail, value)
-
-        if revisions:
+        if declaration.get("revisions", True):
             conflict = "ON CONFLICT DO NOTHING"
         else:
             # SET touches only value: the stored claim and recorded_at are
@@ -199,12 +251,25 @@ def write_actuals(
             # the update into skip-or-raise.
             conflict = ("ON CONFLICT (series_id, target_time) "
                         "DO UPDATE SET value = EXCLUDED.value")
-        placeholders = ", ".join(["%s"] * len(cols))
+        col_sql = "".join(f", {c}" for c in data_cols)
+        # coalesce: an unstated knowledge time takes the column default (arrival
+        # measured) even when other rows of the same batch state one.
+        values_sql = ", ".join(
+            ["%s", "%s", "coalesce(%s::timestamptz, now())", *["%s"] * len(data_cols)]
+        )
         try:
             cur.executemany(
-                f"INSERT INTO {s}.{table} ({', '.join(cols)}) "
-                f"VALUES ({placeholders}) {conflict}",
-                [row(p) for p in points],
+                f"INSERT INTO {s}.{table} (series_id, target_time, {knowledge_col}{col_sql}) "
+                f"VALUES ({values_sql}) {conflict}",
+                [
+                    (
+                        series_id,
+                        ts,
+                        _stated(values, knowledge_col, available_at),
+                        *[values.get(c) for c in data_cols],
+                    )
+                    for ts, values in rows
+                ],
             )
         except psycopg.errors.IntegrityConstraintViolation as e:
             raise ConflictingBelief(str(e).splitlines()[0]) from e
@@ -214,22 +279,55 @@ def write_predictors(
     conn: Any,
     config: StoreConfig,
     series: SeriesRef,
-    points: Sequence[tuple[datetime, datetime, float | None]],
+    points: Iterable[Point],
+    *,
+    available_at: datetime | None = None,
+    table: str = "predictors",
 ) -> None:
-    """Ingest external forecast vintages as ``(target_time, available_at, value)``.
+    """Ingest external forecast vintages. Idempotent (``ON CONFLICT DO NOTHING``).
 
-    ``series`` is the registered name or ``series_id``. ``available_at`` is
-    the vendor publication time — the natural vintage key
-    (spec §6.2). ``value`` is the vendor's point value; its statistic
-    (deterministic run, ensemble mean, median) is per-feed registry metadata,
-    never a column-name claim. Idempotent.
+    ``series`` is the registered name or ``series_id``; ``table`` names a
+    predictors-role instance (spec §6.2) — the canonical feed table or a
+    declared vendor instance, band and all. Points are
+    ``(target_time, value)`` or ``(target_time, {"value": v, "q50": ..., ...})``
+    with an optional per-point ``available_at``.
+
+    Knowledge time is the vendor publication time — the natural vintage key
+    (spec §6.2). A per-point ``available_at`` wins, else the call-level one
+    (the common case: one vendor run, one publication, many targets); with
+    neither the write is refused — publication is stated, never defaulted.
+    The value's statistic (deterministic run, ensemble mean, median) is
+    per-feed registry metadata, never a column-name claim.
     """
+    from forecast_store.read import _table_declaration
+
     s = config.schema
     with conn.cursor() as cur:
         series_id, interval = _lookup(cur, s, series)
-        _check_grid(interval, series, (ts for ts, _, _ in points))
+        declaration = _table_declaration(cur, s, table)
+        if declaration.get("role") != "predictors":
+            raise ValueError(f"{table!r} is not a predictors instance")
+        cols, rows = _normalize(table, declaration, points, per_point_knowledge=True)
+        _check_grid(interval, series, (ts for ts, _ in rows))
+        if not rows:
+            return
+        knowledge_col = declaration["knowledge_column"]
+        data_cols = [c for c in cols if c != knowledge_col]
+        stated = [_stated(values, knowledge_col, available_at) for _, values in rows]
+        if any(k is None for k in stated):
+            raise ValueError(
+                f"{table!r} needs a knowledge time on every point: pass available_at per "
+                "point or for the call — vendor publication is stated, never defaulted "
+                "(spec §6.2)"
+            )
+
+        col_sql = "".join(f", {c}" for c in data_cols)
+        placeholders = ", ".join(["%s"] * (3 + len(data_cols)))
         cur.executemany(
-            f"INSERT INTO {s}.predictors (series_id, target_time, available_at, value) "
-            "VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
-            [(series_id, ts, avail, v) for ts, avail, v in points],
+            f"INSERT INTO {s}.{table} (series_id, target_time, {knowledge_col}{col_sql}) "
+            f"VALUES ({placeholders}) ON CONFLICT DO NOTHING",
+            [
+                (series_id, ts, k, *[values.get(c) for c in data_cols])
+                for (ts, values), k in zip(rows, stated)
+            ],
         )

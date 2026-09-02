@@ -56,23 +56,15 @@ def seeded(request):
     horizon_hours = int((HORIZON_END - HISTORY_START) / HOUR)
     # Vintage A: published well before asof, covers history + horizon, value 10.
     write_predictors(
-        conn,
-        config,
-        TEMP,
-        [
-            (HISTORY_START + i * HOUR, ASOF - timedelta(hours=12), 10.0)
-            for i in range(horizon_hours)
-        ],
+        conn, config, TEMP,
+        [(HISTORY_START + i * HOUR, 10.0) for i in range(horizon_hours)],
+        available_at=ASOF - timedelta(hours=12),
     )
     # Vintage B: published AFTER asof, value 99 — must be invisible at asof.
     write_predictors(
-        conn,
-        config,
-        TEMP,
-        [
-            (HISTORY_START + i * HOUR, LATE_VINTAGE_AT, 99.0)
-            for i in range(horizon_hours)
-        ],
+        conn, config, TEMP,
+        [(HISTORY_START + i * HOUR, 99.0) for i in range(horizon_hours)],
+        available_at=LATE_VINTAGE_AT,
     )
     conn.commit()
     return conn, config

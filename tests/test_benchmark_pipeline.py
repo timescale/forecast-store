@@ -40,7 +40,7 @@ def seeded(request):
     from forecast_store.config import StoreConfig
     from forecast_store.provision import provision
     from forecast_store.series import register_series
-    from forecast_store.write import write_predictors
+    from forecast_store.write import write_actuals, write_predictors
 
     config = StoreConfig()
     provision(DSN, config)
@@ -49,29 +49,30 @@ def seeded(request):
     _cleanup(conn)
     request.addfinalizer(lambda: _cleanup(conn))
 
-    load_id = register_series(conn, config, LOAD, HOUR)
+    register_series(conn, config, LOAD, HOUR)
     for col in WEATHER_COLS:
         register_series(conn, config, _weather_series(col), HOUR)
 
-    with conn.cursor() as cur:
-        # Measurements: deterministic daily/weekly pattern, claims at target time
-        # (backfill with per-row availability so backtest cutoffs see history).
-        hours = int((DATA_END - T0) / HOUR)
-        cur.executemany(
-            "INSERT INTO forecast.actuals (series_id, target_time, available_at, value) "
-            "VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
-            [
-                (
-                    load_id,
-                    T0 + i * HOUR,
-                    T0 + i * HOUR,
-                    100
+    # Measurements: deterministic daily/weekly pattern, claims at target time
+    # (backfill with per-row availability so backtest cutoffs see history).
+    hours = int((DATA_END - T0) / HOUR)
+    write_actuals(
+        conn,
+        config,
+        LOAD,
+        [
+            (
+                T0 + i * HOUR,
+                {
+                    "value": 100
                     + 20 * math.sin(2 * math.pi * (i % 24) / 24)
                     + 5 * math.sin(2 * math.pi * (i % 168) / 168),
-                )
-                for i in range(hours)
-            ],
-        )
+                    "available_at": T0 + i * HOUR,
+                },
+            )
+            for i in range(hours)
+        ],
+    )
 
     # Predictors: one early vintage covering the whole span (published at T0).
     for col in WEATHER_COLS:
@@ -79,7 +80,8 @@ def seeded(request):
             conn,
             config,
             _weather_series(col),
-            [(T0 + i * HOUR, T0, 10.0 + (i % 24)) for i in range(hours)],
+            [(T0 + i * HOUR, 10.0 + (i % 24)) for i in range(hours)],
+            available_at=T0,
         )
     conn.commit()
     return conn, config

@@ -55,7 +55,9 @@ moment:
 
 ```python
 import psycopg
-from forecast_store import StoreConfig, register_series, write_forecast_run
+from forecast_store import (
+    StoreConfig, register_series, write_actuals, write_forecast_run, write_predictors,
+)
 
 with psycopg.connect(DSN) as conn:
     config = StoreConfig.from_store(conn)  # the declaration the store was provisioned with
@@ -66,6 +68,9 @@ with psycopg.connect(DSN) as conn:
         available_at=now,                       # the knowledge time, recorded
         points=[(ts, {"q05": 1.1, "q50": 2.0, "q95": 3.2}), ...],
     )
+    # Same point shape for measurements and vendor feeds; knowledge time follows the table's role:
+    write_actuals(conn, config, "site42/load", [(ts, 2.1), ...])                # arrival measured
+    write_predictors(conn, config, "site42/wx/temp", [(ts, 9.8), ...], available_at=published)
     conn.commit()  # run + points: one transaction
 ```
 

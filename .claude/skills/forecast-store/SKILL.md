@@ -51,7 +51,9 @@ Register only with explicitly known `sample_interval`; never infer it from data 
 ## Canonical queries
 
 Use `forecast_store.queries.forecast_asof(...)` for vintage selection (returns
-`(sql, params)`); the hot serving path is the generated `forecast.latest_forecasts` view.
+`(sql, params)`; `table=` for another forecast-log instance, `recorded_before=` for the
+system-clock pin, `run_name=` to pin the producer) — or `Store.forecast_asof(...)`, the
+executed form; the hot serving path is the generated `forecast.latest_forecasts` view.
 For evaluation joins and context assembly, follow spec §9.2/§9.3 exactly — vintage
 selection *before* the actuals join, and `last(value, available_at)` only inside
 `GROUP BY`/cagg contexts (never as a `DISTINCT ON` substitute).

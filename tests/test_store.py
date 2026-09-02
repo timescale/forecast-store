@@ -111,8 +111,9 @@ def test_store_live():
                 SERIES, table="predictors", start=T0, end=T0 + H, asof=T0
             )
             assert [v for _, _, v in rows] == [2.0]
-            asof_rows = store.forecast_asof(SERIES, T0, T0 + H, T0)  # executed, not built
-            assert len(asof_rows) == 1 and asof_rows[0][3] == run_id
+            asof = store.forecast_asof(SERIES, T0, T0 + H, T0)  # executed, not built
+            assert len(asof.rows) == 1
+            assert asof.rows[0][asof.columns.index("run_id")] == run_id
 
         # Leaving the block committed: a fresh connection sees everything.
         with psycopg.connect(DSN) as conn:

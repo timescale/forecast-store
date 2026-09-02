@@ -76,21 +76,26 @@ def get_series_id(conn: Any, config: StoreConfig, name: str) -> int:
         return series_id
 
 
+def _ref_column(series: SeriesRef) -> tuple[str, str | int]:
+    """``("name", name)`` or ``("series_id", id)`` for a series reference —
+    the registry column it addresses and the normalized key."""
+    if isinstance(series, str):
+        return "name", series
+    if isinstance(series, Integral) and not isinstance(series, bool):
+        return "series_id", int(series)
+    raise TypeError(
+        "series must be a registered name (str) or a series_id (int), "
+        f"got {type(series).__name__}"
+    )
+
+
 def _lookup(cur: Any, schema: str, series: SeriesRef) -> tuple[int, timedelta]:
     """Resolve a series reference to ``(series_id, sample_interval)``.
 
     Shared by the read and write paths: one registry round-trip yields both
     the id the tables key on and the grid the write path validates against.
     """
-    if isinstance(series, str):
-        column, key = "name", series
-    elif isinstance(series, Integral) and not isinstance(series, bool):
-        column, key = "series_id", int(series)
-    else:
-        raise TypeError(
-            "series must be a registered name (str) or a series_id (int), "
-            f"got {type(series).__name__}"
-        )
+    column, key = _ref_column(series)
     cur.execute(
         f"SELECT series_id, sample_interval FROM {schema}.series WHERE {column} = %s",
         (key,),

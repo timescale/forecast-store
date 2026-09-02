@@ -31,6 +31,7 @@ from uuid import UUID
 
 from forecast_store.config import StoreConfig
 from forecast_store.errors import InvalidDeclaration
+from forecast_store.queries import ForecastsAsOf, forecast_asof_columns
 from forecast_store.queries import forecast_asof as _forecast_asof_sql
 from forecast_store.read import (
     ContextSeries,
@@ -242,15 +243,27 @@ class Store:
         )
 
     def forecast_asof(
-        self, series_name: str, target_start: datetime, target_end: datetime, asof: datetime
-    ) -> list[tuple]:
+        self,
+        series: SeriesRef,
+        target_start: datetime,
+        target_end: datetime,
+        asof: datetime,
+        *,
+        table: str = "forecasts",
+        recorded_before: datetime | None = None,
+        run_name: str | None = None,
+    ) -> ForecastsAsOf:
         """Latest vintage per target at or before ``asof`` (spec §9.1), executed.
 
-        Rows are ``(series_id, target_time, available_at, run_id,
-        *config.value_columns)``. The ``(sql, params)`` builder behind it stays
-        available as :func:`forecast_store.queries.forecast_asof` for hand-written SQL.
+        Parameters as :func:`forecast_store.queries.forecast_asof` — the
+        ``(sql, params)`` builder, which stays available for hand-written
+        SQL. Returns a :class:`ForecastsAsOf`: ``(columns, rows)`` plus
+        ``.to_pandas()``.
         """
-        sql, params = _forecast_asof_sql(self.config, series_name, target_start, target_end, asof)
+        sql, params = _forecast_asof_sql(
+            self.config, series, target_start, target_end, asof,
+            table=table, recorded_before=recorded_before, run_name=run_name,
+        )
         with self.conn.cursor() as cur:
             cur.execute(sql, params)
-            return cur.fetchall()
+            return ForecastsAsOf(forecast_asof_columns(self.config, table), cur.fetchall())

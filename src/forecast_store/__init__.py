@@ -37,7 +37,7 @@ from forecast_store.errors import (
 )
 from forecast_store.naming import parse_quantile_column, quantile_column
 from forecast_store.provision import ProvisionReport, provision
-from forecast_store.queries import forecast_asof
+from forecast_store.queries import ForecastsAsOf, forecast_asof, forecast_asof_columns
 from forecast_store.read import (
     ContextSeries,
     VersionedSeries,
@@ -83,6 +83,8 @@ __all__ = [
     "ContextSeries",
     "VersionedSeries",
     "forecast_asof",
+    "forecast_asof_columns",
+    "ForecastsAsOf",
     # naming
     "quantile_column",
     "parse_quantile_column",

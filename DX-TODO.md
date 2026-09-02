@@ -160,11 +160,23 @@ owns the transaction. Items are ranked by impact; check them off as they land.
   - [x] New `forecast_store/timestamps.py`: `aware(value, name)` raises `NaiveTimestamp` (a `ForecastStoreError` + `ValueError`) or `TypeError` for a non-datetime; the grid check moved there too
   - [x] Enforced before any statement runs on every write (`target_time`, per-point `available_at` / `target_time_observed`, call-level `available_at`, run `context_start`/`context_end`), every read (`start`, `end`, `asof`, `recorded_before`), and the `forecast_asof` builder — reads had the same silent-wrong path
 
-- [ ] **10. `forecast_asof` sits at a different level than the reads.**
-  Returns `(sql, params)` instead of executing, hardcodes the canonical
-  `forecasts` table, and lacks `recorded_before`.
-  - Add `table` and `recorded_before` parameters
+- [x] **10. `forecast_asof` sits at a different level than the reads.**
+  Returned `(sql, params)` instead of executing, hardcoded the canonical
+  `forecasts` table, and lacked `recorded_before`.
+  - [x] `table=` (resolved DB-free from the config via `table_configs`), `recorded_before=`, `run_name=` pin, and name-or-id on the builder; `forecast_asof_columns()` names the row positions
   - [x] Decided with item 5: `Store.forecast_asof(...)` executes and returns rows; the `(sql, params)` builder stays for SQL users
+  - [x] `Store.forecast_asof` returns `ForecastsAsOf` — `(columns, rows)` + `.to_pandas()` — mirroring item 8
+
+  **Done (2026-09-02) as planned:** `table="forecasts"` resolved DB-free from
+  the config via `table_configs` (unknown → `UnknownTable`, no run provenance
+  → `DeclarationMismatch`; value columns from that declaration);
+  `recorded_before` as a `recorded_at` predicate; a name keeps
+  `get_series_id(%s)` in the SQL, an id becomes a direct predicate; the
+  `Store` method returns a small result type with `.columns`, `.rows`,
+  `.to_pandas()` (mirrors item 8); optional `run_name` pin for parity with
+  the context read. Existing shape test in `tests/test_ddl.py` stays valid
+  for the default case. Decisions: run_name pin [yes], typed result [yes],
+  name-or-id [yes].
 
 - [ ] **11. CLI cannot express the full config.**
   No `extra_tables`, `enforcement`, or `append_only_guard`; no config-file input;

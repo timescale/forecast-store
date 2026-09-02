@@ -154,10 +154,11 @@ owns the transaction. Items are ranked by impact; check them off as they land.
   - [x] `ContextSeries` / `VersionedSeries` named tuples: still unpack as `(sample_interval, rows)`, add `.gaps` and `.to_pandas()` (UTC-canonical index/columns; pandas imported lazily, not a dependency). Both adapters use them
   - [x] `column` default documented on the read (`value` = actuals/canonical predictors; forecast logs need a band column or `mean`); the mismatch error says to pick one with `column=` (landed with item 7)
 
-- [ ] **9. Naive datetimes are not rejected.**
-  `_check_grid` calls `.timestamp()`, which treats naive datetimes as local
+- [x] **9. Naive datetimes are not rejected.**
+  `_check_grid` called `.timestamp()`, which treats naive datetimes as local
   time; Postgres casts naive values by session timezone. Silent-wrong path.
-  - Raise on `tzinfo is None` for `target_time` and `available_at` at every write path
+  - [x] New `forecast_store/timestamps.py`: `aware(value, name)` raises `NaiveTimestamp` (a `ForecastStoreError` + `ValueError`) or `TypeError` for a non-datetime; the grid check moved there too
+  - [x] Enforced before any statement runs on every write (`target_time`, per-point `available_at` / `target_time_observed`, call-level `available_at`, run `context_start`/`context_end`), every read (`start`, `end`, `asof`, `recorded_before`), and the `forecast_asof` builder — reads had the same silent-wrong path
 
 - [ ] **10. `forecast_asof` sits at a different level than the reads.**
   Returns `(sql, params)` instead of executing, hardcodes the canonical

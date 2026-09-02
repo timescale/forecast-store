@@ -48,6 +48,12 @@ class MisalignedTimestamp(ForecastStoreError, ValueError):
     """A target_time off the series' declared bucket grid (spec §4.1)."""
 
 
+class NaiveTimestamp(ForecastStoreError, ValueError):
+    """A timestamp without ``tzinfo``. The store speaks ``timestamptz``; a
+    naive value would be silently reinterpreted in the session time zone, so
+    it is refused before any statement runs."""
+
+
 class ConflictingBelief(ForecastStoreError):
     """A single-belief table already holds a different value for this target
     (spec §6.1). Raised by the generated ``belief_guard`` trigger; identical

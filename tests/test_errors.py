@@ -14,6 +14,7 @@ from forecast_store.errors import (
     InvalidDeclaration,
     MigrationRequired,
     MisalignedTimestamp,
+    NaiveTimestamp,
     NotProvisioned,
     UnknownSeries,
     UnknownTable,
@@ -21,7 +22,7 @@ from forecast_store.errors import (
 
 ALL = (
     UnknownSeries, UnknownTable, InvalidDeclaration, DeclarationMismatch,
-    MisalignedTimestamp, ConflictingBelief, MigrationRequired, NotProvisioned,
+    MisalignedTimestamp, NaiveTimestamp, ConflictingBelief, MigrationRequired, NotProvisioned,
 )
 
 
@@ -33,7 +34,7 @@ def test_every_error_shares_the_base_and_is_exported():
 
 def test_built_in_co_bases():
     assert issubclass(UnknownSeries, LookupError) and issubclass(UnknownTable, LookupError)
-    for exc in (InvalidDeclaration, DeclarationMismatch, MisalignedTimestamp):
+    for exc in (InvalidDeclaration, DeclarationMismatch, MisalignedTimestamp, NaiveTimestamp):
         assert issubclass(exc, ValueError)
     # A conflict with stored data is not a bad argument: `except ValueError`
     # around a write must not swallow it.

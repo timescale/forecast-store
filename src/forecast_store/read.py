@@ -17,6 +17,10 @@ one-pass TimescaleDB form: ``locf(last(value, knowledge))`` inside
 is leakage-free by construction: a belief claimed after that moment cannot be
 returned (spec §9.1/§9.3).
 
+Every timestamp must be timezone-aware
+(:class:`~forecast_store.errors.NaiveTimestamp` otherwise), checked before
+any statement runs.
+
 Results are small named tuples — :class:`ContextSeries`,
 :class:`VersionedSeries` — that still unpack as ``(sample_interval, rows)``
 and add the common follow-ups: ``.gaps`` and ``.to_pandas()`` (pandas is
@@ -31,6 +35,7 @@ from typing import Any, NamedTuple
 from forecast_store.config import StoreConfig
 from forecast_store.errors import DeclarationMismatch, UnknownSeries, UnknownTable
 from forecast_store.series import SeriesRef, _lookup
+from forecast_store.timestamps import aware
 
 __all__ = [
     "ContextSeries",
@@ -180,6 +185,11 @@ def read_context_series(
     Returns a :class:`ContextSeries`: ``(sample_interval, rows)`` with rows
     ``(ts, raw_value, value)``, plus ``.gaps`` and ``.to_pandas()``.
     """
+    for name, stamp in (("start", start), ("end", end), ("asof", asof)):
+        aware(stamp, name)
+    if recorded_before is not None:
+        aware(recorded_before, "recorded_before")
+
     s = config.schema
     with conn.cursor() as cur:
         series_id, interval, knowledge_col = _resolve(
@@ -242,6 +252,11 @@ def read_versioned_series(
     ``(target_time, available_at, value)`` ordered by target then knowledge,
     plus ``.to_pandas()`` for a UTC-canonical frame.
     """
+    for name, stamp in (("start", start), ("end", end)):
+        aware(stamp, name)
+    if recorded_before is not None:
+        aware(recorded_before, "recorded_before")
+
     s = config.schema
     with conn.cursor() as cur:
         series_id, interval, knowledge_col = _resolve(

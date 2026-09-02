@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from forecast_store.config import StoreConfig
+from forecast_store.timestamps import aware
 
 
 def forecast_asof(
@@ -21,6 +22,10 @@ def forecast_asof(
     asof: datetime,
 ) -> tuple[str, tuple]:
     """Latest vintage per target at or before ``asof`` (spec §9.1)."""
+    for name, stamp in (
+        ("target_start", target_start), ("target_end", target_end), ("asof", asof)
+    ):
+        aware(stamp, name)
     s = config.schema
     cols = ", ".join(f"f.{c}" for c in config.value_columns)
     sql = f"""\

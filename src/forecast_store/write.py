@@ -24,13 +24,15 @@ Every write takes a *series reference* — the registered name or the
 ``target_time`` against the registry's declared ``sample_interval`` (spec
 §5.1: the shared bucket grid is enforced at the SDK write path; the generated
 ``data_quality_sweep`` is the backstop for raw-SQL writers). Knowledge times
-are not grid-bound.
+are not grid-bound. Every timestamp must be timezone-aware
+(:class:`~forecast_store.errors.NaiveTimestamp` otherwise), checked before
+any statement runs.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -38,6 +40,7 @@ from forecast_store.config import StoreConfig
 from forecast_store.errors import ConflictingBelief, DeclarationMismatch, MisalignedTimestamp
 from forecast_store.read import _table_declaration
 from forecast_store.series import SeriesRef, _lookup
+from forecast_store.timestamps import aware, check_grid
 
 __all__ = [
     "ConflictingBelief",  # errors re-exported for the import paths writers already use
@@ -52,24 +55,7 @@ __all__ = [
 #: a bare scalar for a table with exactly one value column.
 Point = tuple[datetime, Mapping[str, Any] | float | None]
 
-#: time_bucket's default origin (2000-01-03, a Monday); sub-day intervals that
-#: divide a day are origin-insensitive, this keeps the rest exact.
-_GRID_ORIGIN = datetime(2000, 1, 3, tzinfo=timezone.utc).timestamp()
-_UNCHECKABLE_SECONDS = 28 * 86400  # month-sized intervals have no fixed stride
 _OBSERVED = "target_time_observed"
-
-
-def _check_grid(interval: timedelta, series: SeriesRef, timestamps) -> None:
-    secs = interval.total_seconds()
-    if secs <= 0 or secs >= _UNCHECKABLE_SECONDS:
-        return
-    for ts in timestamps:
-        rem = (ts.timestamp() - _GRID_ORIGIN) % secs
-        if min(rem, secs - rem) > 1e-6:
-            raise MisalignedTimestamp(
-                f"target_time {ts.isoformat()} is off the declared "
-                f"{secs:.0f}s grid of series {series!r} (spec §4.1)"
-            )
 
 
 def _normalize(
@@ -98,6 +84,7 @@ def _normalize(
     rows: list[tuple[datetime, dict[str, Any]]] = []
     used: set[str] = set()
     for ts, values in points:
+        aware(ts, "target_time")
         if not isinstance(values, Mapping):
             if len(value_columns) != 1:
                 raise DeclarationMismatch(
@@ -116,6 +103,9 @@ def _normalize(
                 f"columns {sorted(unknown)} are not declared by {table!r} "
                 f"(writable columns: {writable})"
             )
+        for stamp in (knowledge_col, _OBSERVED):  # per-point timestamps, where given
+            if values.get(stamp) is not None:
+                aware(values[stamp], stamp)
         used.update(values)
         rows.append((ts, dict(values)))
     return [c for c in writable if c in used], rows
@@ -155,6 +145,11 @@ def write_forecast_run(
     """
     from psycopg.types.json import Jsonb
 
+    aware(available_at, "available_at")
+    for name, stamp in (("context_start", context_start), ("context_end", context_end)):
+        if stamp is not None:
+            aware(stamp, name)
+
     s = config.schema
     with conn.cursor() as cur:
         series_id, interval = _lookup(cur, s, series)
@@ -162,7 +157,7 @@ def write_forecast_run(
         if not declaration.get("has_runs"):
             raise DeclarationMismatch(f"{table!r} is not a forecast log (no run provenance)")
         cols, rows = _normalize(table, declaration, points, per_point_knowledge=False)
-        _check_grid(interval, series, (ts for ts, _ in rows))
+        check_grid(interval, series, (ts for ts, _ in rows))
         knowledge_col = declaration["knowledge_column"]
 
         cur.execute(
@@ -227,6 +222,9 @@ def write_actuals(
     """
     import psycopg
 
+    if available_at is not None:
+        aware(available_at, "available_at")
+
     s = config.schema
     with conn.cursor() as cur:
         series_id, interval = _lookup(cur, s, series)
@@ -234,7 +232,7 @@ def write_actuals(
         if declaration.get("role") != "actuals":
             raise DeclarationMismatch(f"{table!r} is not an actuals instance")
         cols, rows = _normalize(table, declaration, points, per_point_knowledge=True)
-        _check_grid(interval, series, (ts for ts, _ in rows))
+        check_grid(interval, series, (ts for ts, _ in rows))
         if not rows:
             return
         knowledge_col = declaration["knowledge_column"]
@@ -296,6 +294,9 @@ def write_predictors(
     The value's statistic (deterministic run, ensemble mean, median) is
     per-feed registry metadata, never a column-name claim.
     """
+    if available_at is not None:
+        aware(available_at, "available_at")
+
     s = config.schema
     with conn.cursor() as cur:
         series_id, interval = _lookup(cur, s, series)
@@ -303,7 +304,7 @@ def write_predictors(
         if declaration.get("role") != "predictors":
             raise DeclarationMismatch(f"{table!r} is not a predictors instance")
         cols, rows = _normalize(table, declaration, points, per_point_knowledge=True)
-        _check_grid(interval, series, (ts for ts, _ in rows))
+        check_grid(interval, series, (ts for ts, _ in rows))
         if not rows:
             return
         knowledge_col = declaration["knowledge_column"]

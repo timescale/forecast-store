@@ -83,14 +83,15 @@ def load_target_entry(group: str, target_name: str | None) -> dict:
     return next(t for t in group_targets if t["name"] == target_name)
 
 
-def _register(cur, name: str, metadata: dict) -> int:
-    from psycopg.types.json import Jsonb
+def _register(conn, name: str, metadata: dict) -> int:
+    from datetime import timedelta
 
-    cur.execute(
-        "SELECT forecast.register_series(%s, interval '15 minutes', %s, %s, %s, %s)",
-        (name, "UTC", None, None, Jsonb(metadata)),
+    from forecast_store.config import StoreConfig
+    from forecast_store.series import register_series
+
+    return register_series(
+        conn, StoreConfig(), name, timedelta(minutes=15), timezone="UTC", metadata=metadata
     )
-    return cur.fetchone()[0]
 
 
 def _has_points(cur, table: str, series_id: int) -> bool:
@@ -123,7 +124,7 @@ def ingest_target(conn, group: str, entry: dict) -> None:
     }
 
     with conn.cursor() as cur:
-        load_id = _register(cur, load_series, metadata)
+        load_id = _register(conn, load_series, metadata)
         if _has_points(cur, "actuals", load_id):
             print(f"skip  {load_series} (already ingested)")
         else:
@@ -150,7 +151,7 @@ def ingest_target(conn, group: str, entry: dict) -> None:
         )
         weather = pd.read_parquet(wx_path)
         for col, series_name in weather_series.items():
-            sid = _register(cur, series_name, metadata)
+            sid = _register(conn, series_name, metadata)
             if _has_points(cur, "predictors", sid):
                 print(f"skip  {series_name} (already ingested)")
                 continue

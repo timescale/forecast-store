@@ -18,6 +18,10 @@ class MigrationRequired(Exception):
     """The store's recorded declaration differs from the requested one."""
 
 
+class NotProvisioned(Exception):
+    """No forecast store exists at the given schema (no ``store_tables``)."""
+
+
 @dataclass(frozen=True)
 class ProvisionReport:
     schema: str

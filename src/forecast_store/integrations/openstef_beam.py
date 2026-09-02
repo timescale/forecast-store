@@ -46,11 +46,12 @@ from openstef_core.datasets import (
 )
 from openstef_core.datasets.validated_datasets import ForecastDataset
 from openstef_core.types import AvailableAt, Quantile
-from pydantic import Field, TypeAdapter
+from pydantic import Field, PrivateAttr, TypeAdapter
 
-from forecast_store.config import StoreConfig
+from forecast_store.config import StoreConfig, _StoreBinding
 from forecast_store.naming import parse_quantile_column, quantile_column
 from forecast_store.read import read_versioned_series
+from forecast_store.series import get_series_id
 from forecast_store.write import write_forecast_run
 
 _METRICS_ADAPTER = TypeAdapter(list[SubsetMetric])
@@ -63,6 +64,10 @@ class TimescaleTargetProvider(TargetProvider[BenchmarkTarget, None]):
     Measurements and predictors come back as ``VersionedTimeSeriesDataset``
     belief-log exports on the registry-declared grid. ``recorded_before``
     optionally freezes the whole benchmark against later writes (spec §9.2).
+
+    The store's declaration is read from its own ``store_tables`` on first
+    use unless ``store_config`` is given; ``store_schema`` says where to look
+    (default ``forecast``).
     """
 
     dsn: str
@@ -75,16 +80,25 @@ class TimescaleTargetProvider(TargetProvider[BenchmarkTarget, None]):
         description="target.name -> {engine column -> predictor series name} (the rename map)",
     )
     metric_providers: list[MetricProvider] = Field(default_factory=list)
-    store_schema: str = "forecast"
-    actuals_revisions: bool = True
+    store_config: StoreConfig | None = Field(
+        default=None,
+        description="The store's declaration; omitted = read from the store's own "
+        "store_tables (at store_schema) on first use.",
+    )
+    store_schema: str | None = Field(
+        default=None,
+        description="Where the store lives when store_config is omitted (default 'forecast').",
+    )
     data_margin: timedelta = Field(
         default=timedelta(days=2),
         description="Read window extends this far past benchmark_end (horizon tail).",
     )
     recorded_before: datetime | None = None
 
-    def _config(self) -> StoreConfig:
-        return StoreConfig(schema=self.store_schema, actuals_revisions=self.actuals_revisions)
+    _binding: _StoreBinding = PrivateAttr()
+
+    def model_post_init(self, _context: Any) -> None:
+        self._binding = _StoreBinding(self.store_config, self.store_schema)
 
     def _read_versioned(
         self, conn, series_name: str, target: BenchmarkTarget, column: str, table: str
@@ -93,7 +107,7 @@ class TimescaleTargetProvider(TargetProvider[BenchmarkTarget, None]):
 
         interval, rows = read_versioned_series(
             conn,
-            self._config(),
+            self._binding.config(conn),
             series_name,
             table=table,
             start=target.train_start,
@@ -178,6 +192,10 @@ class TimescaleBenchmarkStorage(BenchmarkStorage):
     Analysis outputs (plots/HTML) are files, not rows: pass ``analysis_dir``
     to delegate them to openstef's local storage, or run with
     ``skip_analysis=True``.
+
+    The store's declaration is the provider's unless ``store_config`` is
+    given — read from the store's own ``store_tables`` on first use when
+    neither declares one.
     """
 
     def __init__(
@@ -194,7 +212,9 @@ class TimescaleBenchmarkStorage(BenchmarkStorage):
         self._dsn = dsn
         self._run_name = run_name
         self._provider = target_provider
-        self._config = store_config or StoreConfig()
+        self._binding = (
+            _StoreBinding(store_config) if store_config is not None else target_provider._binding
+        )
         self._model = model_label
         # The workspace driver (spec §7.2): point benchmarks at a separate
         # forecast-log instance to keep experiment artifacts out of production
@@ -209,17 +229,17 @@ class TimescaleBenchmarkStorage(BenchmarkStorage):
     def _label(self, target: BenchmarkTarget) -> str:
         return f"{self._run_name}/{target.name}"
 
-    def _series_id(self, cur, target: BenchmarkTarget) -> int:
-        cur.execute(
-            f"SELECT {self._config.schema}.get_series_id(%s)",
-            (self._provider.measurement_series[target.name],),
-        )
-        return cur.fetchone()[0]
+    def _series(self, target: BenchmarkTarget) -> str:
+        return self._provider.measurement_series[target.name]
+
+    def _series_id(self, conn, target: BenchmarkTarget) -> int:
+        return get_series_id(conn, self._binding.config(conn), self._series(target))
 
     def _has_runs(self, table: str, label: str) -> bool:
         with psycopg.connect(self._dsn) as conn, conn.cursor() as cur:
+            s = self._binding.config(conn).schema
             cur.execute(
-                f"SELECT EXISTS (SELECT 1 FROM {self._config.schema}.{table} WHERE run_name = %s)",
+                f"SELECT EXISTS (SELECT 1 FROM {s}.{table} WHERE run_name = %s)",
                 (label,),
             )
             return cur.fetchone()[0]
@@ -227,7 +247,6 @@ class TimescaleBenchmarkStorage(BenchmarkStorage):
     # -- backtest outputs --------------------------------------------------
 
     def save_backtest_output(self, target: BenchmarkTarget, output: TimeSeriesDataset) -> None:
-        s = self._config.schema
         frame = output.data
         quantile_cols = {
             col: quantile_column(Decimal(str(float(Quantile.parse(col)))))
@@ -237,9 +256,10 @@ class TimescaleBenchmarkStorage(BenchmarkStorage):
         label = self._label(target)
 
         with psycopg.connect(self._dsn) as conn:
+            config = self._binding.config(conn)
+            s = config.schema
             with conn.cursor() as cur:
                 _allow_workspace_decompression(cur)
-                series_id = self._series_id(cur, target)
                 # Overwrite gracefully: replace this label's previous artifacts.
                 cur.execute(
                     f"DELETE FROM {s}.{self._forecast_table} WHERE run_id IN "
@@ -258,9 +278,9 @@ class TimescaleBenchmarkStorage(BenchmarkStorage):
                 ]
                 write_forecast_run(
                     conn,
-                    self._config,
+                    config,
                     table=self._forecast_table,
-                    series_id=series_id,
+                    series=self._series(target),
                     model=self._model,
                     run_name=label,
                     available_at=available_at.to_pydatetime(),
@@ -274,13 +294,13 @@ class TimescaleBenchmarkStorage(BenchmarkStorage):
 
         from forecast_store.read import _table_declaration
 
-        s = self._config.schema
         label = self._label(target)
 
         with psycopg.connect(self._dsn) as conn, conn.cursor() as cur:
+            s = self._binding.config(conn).schema
             value_cols = _table_declaration(cur, s, self._forecast_table)["value_columns"]
             col_sql = "".join(f", f.{c}" for c in value_cols)
-            series_id = self._series_id(cur, target)
+            series_id = self._series_id(conn, target)
             cur.execute(
                 f"SELECT sample_interval FROM {s}.series WHERE series_id = %s", (series_id,)
             )
@@ -315,7 +335,6 @@ class TimescaleBenchmarkStorage(BenchmarkStorage):
     def save_evaluation_output(self, target: BenchmarkTarget, output: EvaluationReport) -> None:
         from psycopg.types.json import Jsonb
 
-        s = self._config.schema
         label = self._label(target)
         quantiles = sorted(
             {float(q) for report in output.subset_reports for q in report.subset.quantiles}
@@ -335,8 +354,9 @@ class TimescaleBenchmarkStorage(BenchmarkStorage):
         }
 
         with psycopg.connect(self._dsn) as conn:
+            s = self._binding.config(conn).schema
+            series_id = self._series_id(conn, target)
             with conn.cursor() as cur:
-                series_id = self._series_id(cur, target)
                 cur.execute(
                     f"INSERT INTO {s}.evaluation_runs (run_name, params) "
                     "VALUES (%s, %s) RETURNING eval_run_id",
@@ -378,9 +398,9 @@ class TimescaleBenchmarkStorage(BenchmarkStorage):
     def load_evaluation_output(self, target: BenchmarkTarget) -> EvaluationReport:
         import pandas as pd
 
-        s = self._config.schema
         label = self._label(target)
         with psycopg.connect(self._dsn) as conn, conn.cursor() as cur:
+            s = self._binding.config(conn).schema
             cur.execute(
                 f"SELECT params FROM {s}.evaluation_runs WHERE run_name = %s "
                 "ORDER BY recorded_at DESC LIMIT 1",

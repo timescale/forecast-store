@@ -1,12 +1,14 @@
 """Context reads: regularized, leakage-free series windows (spec §9.3).
 
-APIs take **table names**. ``store_tables`` is the routing registry: each
-provisioned table declares its value columns, knowledge clock, and whether it
-carries run provenance, and the reader resolves everything from those
-declarations — no table semantics are hardcoded here, which is also what
-makes additional instances (a second forecast table) readable with zero new
-machinery. Table names are validated against the registry before entering
-SQL, so they are whitelisted by construction.
+APIs take a **series reference** — the registered name or ``series_id``
+(see :mod:`forecast_store.series`) — and **table names**. ``store_tables``
+is the routing registry: each provisioned table declares its value columns,
+knowledge clock, and whether it carries run provenance, and the reader
+resolves everything from those declarations — no table semantics are
+hardcoded here, which is also what makes additional instances (a second
+forecast table) readable with zero new machinery. Table names are validated
+against the registry before entering SQL, so they are whitelisted by
+construction.
 
 Reads are registry-driven on the grid too — the bucket grid comes from the
 series' declared ``sample_interval``, never inferred from data — and use the
@@ -26,25 +28,18 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from forecast_store.config import StoreConfig
+from forecast_store.series import SeriesRef, UnknownSeries, _lookup
 
-
-class UnknownSeries(Exception):
-    """The series is not registered in the store."""
+__all__ = [
+    "UnknownSeries",  # defined in forecast_store.series; re-exported here
+    "UnknownTable",
+    "read_context_series",
+    "read_versioned_series",
+]
 
 
 class UnknownTable(Exception):
     """The table is not declared in store_tables."""
-
-
-def _series_lookup(cur, schema: str, series_name: str) -> tuple[int, timedelta]:
-    cur.execute(
-        f"SELECT series_id, sample_interval FROM {schema}.series WHERE name = %s",
-        (series_name,),
-    )
-    row = cur.fetchone()
-    if row is None:
-        raise UnknownSeries(series_name)
-    return row
 
 
 def _table_declaration(cur, schema: str, table: str) -> dict[str, Any]:
@@ -67,13 +62,13 @@ def _table_declaration(cur, schema: str, table: str) -> dict[str, Any]:
 def _resolve(
     cur,
     config: StoreConfig,
-    series_name: str,
+    series: SeriesRef,
     table: str,
     column: str,
     run_name: str | None,
 ) -> tuple[int, timedelta, str]:
     """Shared validation; returns (series_id, sample_interval, knowledge_col)."""
-    series_id, interval = _series_lookup(cur, config.schema, series_name)
+    series_id, interval = _lookup(cur, config.schema, series)
     declaration = _table_declaration(cur, config.schema, table)
     if column not in declaration["value_columns"]:
         raise ValueError(
@@ -88,7 +83,7 @@ def _resolve(
 def read_context_series(
     conn: Any,
     config: StoreConfig,
-    series_name: str,
+    series: SeriesRef,
     *,
     table: str,
     start: datetime,
@@ -100,11 +95,12 @@ def read_context_series(
 ) -> tuple[timedelta, list[tuple[datetime, float | None, float | None]]]:
     """One regularized series window on the declared grid.
 
-    ``table`` names the source (validated against ``store_tables``): the
-    series' measurements (``actuals``), a vendor feed (``predictors``), or a
-    forecast log (``forecasts`` — pick ``column`` from its declared band;
-    ``run_name`` optionally pins the producing job, otherwise the latest
-    vintage across all producers wins).
+    ``series`` is the registered name or ``series_id``. ``table`` names the
+    source (validated against ``store_tables``): the series' measurements
+    (``actuals``), a vendor feed (``predictors``), or a forecast log
+    (``forecasts`` — pick ``column`` from its declared band; ``run_name``
+    optionally pins the producing job, otherwise the latest vintage across
+    all producers wins).
 
     ``asof`` — the decision moment — is required on every read: a context read
     is a model input, and a model input always has one. Live reads pass now();
@@ -125,7 +121,7 @@ def read_context_series(
     s = config.schema
     with conn.cursor() as cur:
         series_id, interval, knowledge_col = _resolve(
-            cur, config, series_name, table, column, run_name
+            cur, config, series, table, column, run_name
         )
 
         join = ""
@@ -161,7 +157,7 @@ ORDER BY 1""",
 def read_versioned_series(
     conn: Any,
     config: StoreConfig,
-    series_name: str,
+    series: SeriesRef,
     *,
     table: str,
     start: datetime,
@@ -186,7 +182,7 @@ def read_versioned_series(
     s = config.schema
     with conn.cursor() as cur:
         series_id, interval, knowledge_col = _resolve(
-            cur, config, series_name, table, column, run_name=None
+            cur, config, series, table, column, run_name=None
         )
 
         predicates = ["series_id = %s", "target_time >= %s", "target_time < %s"]

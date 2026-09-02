@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Iterable, Literal
+from typing import Any, Iterable, Literal
 
 from forecast_store.naming import _as_level, quantile_column
 
@@ -111,7 +111,13 @@ TableSpec = ForecastLogSpec | PredictorLogSpec | ActualsSpec
 
 @dataclass(frozen=True)
 class StoreConfig:
-    """Declared configuration of one forecast store."""
+    """Declared configuration of one forecast store.
+
+    The declaration is canonicalized on construction (band sorted and
+    de-duplicated, ``extra_tables`` in name order), so two declarations of
+    the same store compare equal however they were spelled — including one
+    rebuilt from the store itself with :meth:`from_store`.
+    """
 
     quantile_band: tuple[Decimal, ...] = field(default=LIANDER_BAND)
     schema: str = "forecast"
@@ -162,6 +168,7 @@ class StoreConfig:
                     raise ValueError(f"{spec.name!r} must have at least one value column")
                 spec = dataclasses.replace(spec, quantile_band=band)
             normalized.append(spec)
+        normalized.sort(key=lambda spec: spec.name)  # declaration order is not significant
         object.__setattr__(self, "extra_tables", tuple(normalized))
 
     @classmethod
@@ -169,6 +176,41 @@ class StoreConfig:
         cls, levels: Iterable[float | str | Decimal], **kwargs: object
     ) -> "StoreConfig":
         return cls(quantile_band=tuple(_as_level(q) for q in levels), **kwargs)  # type: ignore[arg-type]
+
+    @classmethod
+    def from_store(cls, conn: Any, schema: str = "forecast") -> "StoreConfig":
+        """Rebuild a provisioned store's declaration from the store alone.
+
+        Reads the per-table declarations ``provision`` persisted in
+        ``store_tables`` (spec §5.2) and inverts them — band, mean column,
+        actuals PK switch, enforcement mode, every extra instance — and
+        recovers ``append_only_guard`` from the catalog (its guard function
+        exists iff it was declared). The result compares equal to the
+        declaration the store was built from and re-provisions as a no-op,
+        so clients never have to redeclare (and drift from) a store's shape.
+
+        Raises :class:`~forecast_store.provision.NotProvisioned` when no
+        store exists at ``schema``.
+        """
+        from forecast_store.ddl import config_from_tables
+        from forecast_store.provision import NotProvisioned
+
+        if not _IDENT_RE.match(schema):
+            raise ValueError(f"schema must be a plain lowercase identifier, got {schema!r}")
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass(%s)", (f"{schema}.store_tables",))
+            if cur.fetchone()[0] is None:
+                raise NotProvisioned(
+                    f"no forecast store at schema {schema!r} "
+                    f"({schema}.store_tables does not exist) — provision it first"
+                )
+            cur.execute(f"SELECT table_name, config FROM {schema}.store_tables")
+            declarations = dict(cur.fetchall())
+            cur.execute("SELECT to_regprocedure(%s)", (f"{schema}.append_only_guard()",))
+            append_only_guard = cur.fetchone()[0] is not None
+        return config_from_tables(
+            declarations, schema=schema, append_only_guard=append_only_guard
+        )
 
     @property
     def quantile_columns(self) -> tuple[str, ...]:
@@ -180,3 +222,33 @@ class StoreConfig:
         """All value columns of the forecasts table (mean first, then the band)."""
         cols = ("mean",) if self.has_mean else ()
         return cols + self.quantile_columns
+
+
+class _StoreBinding:
+    """How a store-backed object finds its declaration.
+
+    Either an explicit :class:`StoreConfig`, or — the default — the store's
+    own ``store_tables`` at ``schema`` (default ``forecast``), read once via
+    :meth:`StoreConfig.from_store` with the first connection handed to
+    :meth:`config`. Shared by the engine integrations so that omitting
+    ``store_config`` always means "whatever the store was provisioned with",
+    never a guessed default.
+    """
+
+    __slots__ = ("_config", "schema")
+
+    def __init__(
+        self, store_config: StoreConfig | None = None, schema: str | None = None
+    ) -> None:
+        if store_config is not None and schema is not None and schema != store_config.schema:
+            raise ValueError(
+                f"schema {schema!r} conflicts with store_config.schema {store_config.schema!r}"
+            )
+        self._config = store_config
+        self.schema = store_config.schema if store_config is not None else (schema or "forecast")
+
+    def config(self, conn: Any) -> StoreConfig:
+        """The declaration, loading it from the store on first call."""
+        if self._config is None:
+            self._config = StoreConfig.from_store(conn, self.schema)
+        return self._config

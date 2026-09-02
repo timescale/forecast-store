@@ -13,10 +13,13 @@ TimescaleDB and are skipped on plain Postgres (spec §3 goal 4).
 from __future__ import annotations
 
 import json
+from decimal import Decimal
+from typing import Mapping
 
 from forecast_store.naming import quantile_column
 from forecast_store.config import (
     CONVENTION_VERSION,
+    RESERVED_TABLES,
     ActualsSpec,
     ForecastLogSpec,
     PredictorLogSpec,
@@ -420,6 +423,68 @@ def table_configs(config: StoreConfig) -> dict[str, dict[str, object]]:
         configs[inst["name"]] = declaration
     configs.update(_evaluation_configs())
     return configs
+
+
+def config_from_tables(
+    declarations: Mapping[str, Mapping[str, object]],
+    *,
+    schema: str = "forecast",
+    append_only_guard: bool = False,
+) -> StoreConfig:
+    """Inverse of :func:`table_configs`: the declaration behind stored rows.
+
+    ``declarations`` is ``store_tables`` as ``{table_name: config}``. The
+    canonical ``forecasts`` and ``actuals`` rows supply the store-level
+    switches; every non-canonical points row becomes an extra instance by
+    its declared role. ``schema`` and ``append_only_guard`` are not persisted
+    per table and are passed in (:meth:`StoreConfig.from_store` recovers the
+    guard from the catalog).
+    """
+    try:
+        forecasts, actuals = declarations["forecasts"], declarations["actuals"]
+    except KeyError as exc:
+        raise ValueError(f"store_tables lacks the canonical {exc} declaration") from None
+
+    def band(declaration: Mapping[str, object]) -> tuple[Decimal, ...]:
+        levels = declaration.get("quantile_band", ())
+        return tuple(Decimal(str(q)) for q in levels)  # type: ignore[union-attr]
+
+    extras: list[ForecastLogSpec | PredictorLogSpec | ActualsSpec] = []
+    for name in sorted(declarations):
+        if name in RESERVED_TABLES:
+            continue
+        d = declarations[name]
+        role = d.get("role")
+        if role == "own_forecasts":
+            extras.append(
+                ForecastLogSpec(name, quantile_band=band(d), has_mean=bool(d["has_mean"]))
+            )
+        elif role == "predictors":
+            extras.append(
+                PredictorLogSpec(
+                    name, quantile_band=band(d), has_value=bool(d.get("has_value", True))
+                )
+            )
+        elif role == "actuals":
+            extras.append(
+                ActualsSpec(
+                    name,
+                    revisions=bool(d.get("revisions", True)),
+                    has_target_time_observed=bool(d.get("has_target_time_observed", False)),
+                )
+            )
+        else:
+            raise ValueError(f"store_tables declares {name!r} with unknown role {role!r}")
+
+    return StoreConfig(
+        quantile_band=band(forecasts),
+        schema=schema,
+        has_mean=bool(forecasts["has_mean"]),
+        actuals_revisions=bool(actuals.get("revisions", True)),
+        enforcement=forecasts.get("enforcement", "monitor"),  # type: ignore[arg-type]
+        append_only_guard=append_only_guard,
+        extra_tables=tuple(extras),
+    )
 
 
 def _evaluation_configs() -> dict[str, dict[str, object]]:

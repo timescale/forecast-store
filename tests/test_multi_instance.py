@@ -90,6 +90,40 @@ def test_extra_instance_validation():
     assert table_configs(config)["wide"]["value_columns"] == list(config.value_columns)
 
 
+def test_config_round_trips_through_store_tables():
+    """config_from_tables inverts table_configs (spec §5.2): what a store
+    persists is enough to rebuild the declaration it was built from — every
+    switch, every extra instance — so clients need not redeclare it."""
+    from forecast_store.ddl import config_from_tables
+
+    config = StoreConfig.from_levels(
+        ["0.1", "0.5", "0.9"],
+        schema="fs_rt",
+        has_mean=False,
+        actuals_revisions=False,
+        enforcement="fk",
+        append_only_guard=True,
+        extra_tables=(
+            PredictorLogSpec("vendor_x", quantile_band=("0.25", "0.75"), has_value=False),
+            ForecastLogSpec("bt_workspace"),  # inherits the store band
+            ActualsSpec("sensor_a", has_target_time_observed=True),
+            ActualsSpec("meter_sb", revisions=False),
+        ),
+    )
+    rebuilt = config_from_tables(table_configs(config), schema="fs_rt", append_only_guard=True)
+    assert rebuilt == config
+    assert table_configs(rebuilt) == table_configs(config)
+    # Extras are canonicalized to name order: declaration order never breaks equality.
+    assert [s.name for s in config.extra_tables] == [
+        "bt_workspace", "meter_sb", "sensor_a", "vendor_x",
+    ]
+
+    with pytest.raises(ValueError, match="canonical"):
+        config_from_tables({"actuals": {"role": "actuals"}})
+    with pytest.raises(ValueError, match="unknown role"):
+        config_from_tables({**table_configs(StoreConfig()), "odd": {"role": "mystery"}})
+
+
 @pytest.mark.skipif(not DSN, reason="FORECAST_STORE_TEST_DSN not set")
 def test_workspace_instance_live():
     """Additive provision of a workspace forecast log onto the existing store,
@@ -98,6 +132,7 @@ def test_workspace_instance_live():
 
     from forecast_store.provision import provision
     from forecast_store.read import read_context_series
+    from forecast_store.series import register_series
     from forecast_store.write import write_forecast_run
 
     config = StoreConfig(
@@ -110,16 +145,14 @@ def test_workspace_instance_live():
     sim = t0 - timedelta(hours=12)
     with psycopg.connect(DSN) as conn:
         try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT forecast.register_series('mi_smoke', interval '1 hour')"
-                )
-                sid = cur.fetchone()[0]
+            # The instance — band and all — is recoverable from the store alone.
+            assert config.extra_tables[0] in StoreConfig.from_store(conn).extra_tables
+            sid = register_series(conn, config, "mi_smoke", timedelta(hours=1))
             write_forecast_run(
                 conn,
                 config,
                 table="bt_workspace",
-                series_id=sid,
+                series="mi_smoke",
                 model="constant",
                 run_name="mi_smoke_run",
                 available_at=sim,
@@ -130,7 +163,7 @@ def test_workspace_instance_live():
             # Canonical column set is rejected by the instance's declaration.
             with pytest.raises(ValueError, match="not declared by 'bt_workspace'"):
                 write_forecast_run(
-                    conn, config, table="bt_workspace", series_id=sid,
+                    conn, config, table="bt_workspace", series=sid,
                     model="constant", available_at=sim,
                     points=[(t0, {"q05": 1.0})],
                 )
@@ -193,6 +226,7 @@ def test_observed_instance_and_grid_validation_live():
     psycopg = pytest.importorskip("psycopg")
 
     from forecast_store.provision import provision
+    from forecast_store.series import register_series
     from forecast_store.write import MisalignedTimestamp, write_actuals
 
     config = StoreConfig(
@@ -204,11 +238,7 @@ def test_observed_instance_and_grid_validation_live():
     jitter = timedelta(seconds=3, milliseconds=200)
     with psycopg.connect(DSN) as conn:
         try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT forecast.register_series('obs_smoke_series', interval '15 minutes')"
-                )
-                sid = cur.fetchone()[0]
+            sid = register_series(conn, config, "obs_smoke_series", timedelta(minutes=15))
             write_actuals(
                 conn, config, sid,
                 [(t0, 1.0, t0 + jitter), (t0 + timedelta(minutes=15), 2.0, None)],
@@ -272,6 +302,7 @@ def test_single_belief_instance_live():
     psycopg = pytest.importorskip("psycopg")
 
     from forecast_store.provision import provision
+    from forecast_store.series import register_series
     from forecast_store.write import ConflictingBelief, write_actuals
 
     config = StoreConfig(extra_tables=(ActualsSpec("sb_smoke", revisions=False),))
@@ -281,11 +312,7 @@ def test_single_belief_instance_live():
     claim = t0 + timedelta(hours=1)  # genuine historical arrival, stated
     with psycopg.connect(DSN) as conn:
         try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT forecast.register_series('sb_smoke_series', interval '15 minutes')"
-                )
-                sid = cur.fetchone()[0]
+            sid = register_series(conn, config, "sb_smoke_series", timedelta(minutes=15))
             write_actuals(
                 conn, config, sid,
                 [(t0, 1.0), (t0 + timedelta(minutes=15), 2.0)],

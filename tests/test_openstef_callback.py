@@ -148,9 +148,9 @@ def test_band_mismatch_rejected(store_conn, prediction):
     import pandas as pd
     from openstef_core.datasets.validated_datasets import ForecastDataset
 
+    from forecast_store.config import StoreConfig
     from forecast_store.integrations.openstef import ForecastStoreCallback
 
-    callback = ForecastStoreCallback(DSN, SERIES)
     off_band = ForecastDataset(
         pd.DataFrame(
             {"quantile_P2.5": [1.0], "quantile_P97.5": [2.0]},
@@ -160,4 +160,4 @@ def test_band_mismatch_rejected(store_conn, prediction):
         forecast_start=datetime(2025, 1, 1, tzinfo=timezone.utc),
     )
     with pytest.raises(ValueError, match="not in the store's declared band"):
-        callback._quantile_column_map(off_band)
+        ForecastStoreCallback._quantile_column_map(off_band, StoreConfig())

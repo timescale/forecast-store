@@ -32,6 +32,7 @@ def seeded(request):
 
     from forecast_store.config import StoreConfig
     from forecast_store.provision import provision
+    from forecast_store.series import register_series
     from forecast_store.write import write_actuals, write_predictors
 
     config = StoreConfig()
@@ -41,15 +42,8 @@ def seeded(request):
     _cleanup(conn)
     request.addfinalizer(lambda: _cleanup(conn))
 
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT forecast.register_series(%s, interval '1 hour')", (LOAD,)
-        )
-        load_id = cur.fetchone()[0]
-        cur.execute(
-            "SELECT forecast.register_series(%s, interval '1 hour')", (TEMP,)
-        )
-        temp_id = cur.fetchone()[0]
+    register_series(conn, config, LOAD, HOUR)
+    register_series(conn, config, TEMP, HOUR)
 
     # Measured history: hourly, one gap; backfill-style explicit claims.
     history = [
@@ -57,14 +51,14 @@ def seeded(request):
         for i in range(48)
         if HISTORY_START + i * HOUR != GAP_TS
     ]
-    write_actuals(conn, config, load_id, history, available_at=ASOF - HOUR)
+    write_actuals(conn, config, LOAD, history, available_at=ASOF - HOUR)
 
     horizon_hours = int((HORIZON_END - HISTORY_START) / HOUR)
     # Vintage A: published well before asof, covers history + horizon, value 10.
     write_predictors(
         conn,
         config,
-        temp_id,
+        TEMP,
         [
             (HISTORY_START + i * HOUR, ASOF - timedelta(hours=12), 10.0)
             for i in range(horizon_hours)
@@ -74,7 +68,7 @@ def seeded(request):
     write_predictors(
         conn,
         config,
-        temp_id,
+        TEMP,
         [
             (HISTORY_START + i * HOUR, LATE_VINTAGE_AT, 99.0)
             for i in range(horizon_hours)
@@ -203,13 +197,14 @@ def test_target_knowledge_cutoff(seeded):
     Runs last: it appends a revision to the shared seed data."""
     from forecast_store.config import StoreConfig
     from forecast_store.integrations.openstef import StoreReader
+    from forecast_store.series import get_series_id
     from forecast_store.write import write_actuals
 
     conn, config = seeded
     revised_ts = HISTORY_START + 10 * HOUR
     write_actuals(
         conn, config,
-        _series_id(conn, LOAD),
+        get_series_id(conn, config, LOAD),  # ids stay accepted alongside names
         [(revised_ts, 555.0)],
         available_at=LATE_VINTAGE_AT,  # settlement revision, published after asof
     )
@@ -227,10 +222,18 @@ def test_target_knowledge_cutoff(seeded):
     assert later.data.loc[revised_ts, "load"] == 555.0  # revision visible later
 
 
-def _series_id(conn, name):
-    with conn.cursor() as cur:
-        cur.execute("SELECT forecast.get_series_id(%s)", (name,))
-        return cur.fetchone()[0]
+def test_store_binding_schema_conflict():
+    """An explicit declaration plus a contradicting ``schema`` is a caller bug,
+    refused at construction — before any connection is opened."""
+    from forecast_store.config import StoreConfig
+    from forecast_store.integrations.openstef import ForecastStoreCallback, StoreReader
+
+    with pytest.raises(ValueError, match="conflicts"):
+        StoreReader(DSN, StoreConfig(schema="fs_a"), schema="fs_b")
+    with pytest.raises(ValueError, match="conflicts"):
+        ForecastStoreCallback(DSN, LOAD, store_config=StoreConfig(schema="fs_a"), schema="fs_b")
+    # Agreeing spellings are fine, and an explicit config is never re-read.
+    assert StoreReader(DSN, StoreConfig(schema="fs_a"), schema="fs_a")._binding.schema == "fs_a"
 
 
 def test_forecast_feed_as_covariate(seeded):
@@ -240,13 +243,12 @@ def test_forecast_feed_as_covariate(seeded):
     from forecast_store.write import write_forecast_run
 
     conn, config = seeded
-    load_id = _series_id(conn, LOAD)
     horizon_ts = [ASOF + i * HOUR for i in range(24)]
 
     def run(value, available_at, run_name=RUN_NAME):
         return write_forecast_run(
             conn, config,
-            series_id=load_id, model="constant", run_name=run_name,
+            series=LOAD, model="constant", run_name=run_name,
             available_at=available_at,
             points=[(ts, {"q50": value}) for ts in horizon_ts],
         )

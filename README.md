@@ -55,16 +55,13 @@ moment:
 
 ```python
 import psycopg
-from forecast_store.config import StoreConfig
-from forecast_store.write import write_forecast_run
+from forecast_store import StoreConfig, register_series, write_forecast_run
 
-config = StoreConfig()  # 7-level quantile band by default; fully declarable
 with psycopg.connect(DSN) as conn:
-    with conn.cursor() as cur:
-        cur.execute("SELECT forecast.register_series('site42/load', interval '15 minutes')")
-        series_id = cur.fetchone()[0]
+    config = StoreConfig.from_store(conn)  # the declaration the store was provisioned with
+    register_series(conn, config, "site42/load", "15 minutes")  # get-or-create
     write_forecast_run(
-        conn, config, series_id=series_id,
+        conn, config, series="site42/load",     # a registered name, or its series_id
         model="my-model", run_name="prod/site42",
         available_at=now,                       # the knowledge time, recorded
         points=[(ts, {"q05": 1.1, "q50": 2.0, "q95": 3.2}), ...],
@@ -113,6 +110,10 @@ workflow = CustomForecastingWorkflow(
 workflow.fit(dataset)
 workflow.predict(dataset)  # persisted: run + points, real available_at, one transaction
 ```
+
+Every adapter reads the store's declaration from its own `store_tables` on first use when
+`store_config` is omitted — pass `schema=` (or `store_schema=` on the provider) for a store
+outside the default `forecast` schema.
 
 Details, mappings, and packaging notes: [`docs/integrations/openstef.md`](docs/integrations/openstef.md).
 

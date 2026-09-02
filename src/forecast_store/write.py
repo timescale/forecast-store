@@ -4,18 +4,22 @@ Callers own the transaction (spec/skill rule: a run row and its points commit
 together, so the frozen-backtest pin can never split a run in half). This
 function never commits.
 
-Every write validates ``target_time`` against the registry's declared
-``sample_interval`` (spec §5.1: the shared bucket grid is enforced at the SDK
-write path; the generated ``data_quality_sweep`` is the backstop for raw-SQL
-writers). Vintage times (``available_at``) are not grid-bound.
+Every write takes a *series reference* — the registered name or the
+``series_id`` (see :mod:`forecast_store.series`) — and validates
+``target_time`` against the registry's declared ``sample_interval`` (spec
+§5.1: the shared bucket grid is enforced at the SDK write path; the generated
+``data_quality_sweep`` is the backstop for raw-SQL writers). Vintage times
+(``available_at``) are not grid-bound.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Sequence
+from uuid import UUID
 
 from forecast_store.config import StoreConfig
+from forecast_store.series import SeriesRef, _lookup
 
 Point = tuple[datetime, Mapping[str, float | None]]
 
@@ -35,18 +39,8 @@ class ConflictingBelief(ValueError):
     re-delivery is silently idempotent instead."""
 
 
-def _check_grid(cur: Any, schema: str, series_id: int, timestamps) -> None:
-    from forecast_store.read import UnknownSeries
-
-    cur.execute(
-        f"SELECT extract(epoch FROM sample_interval) FROM {schema}.series "
-        "WHERE series_id = %s",
-        (series_id,),
-    )
-    row = cur.fetchone()
-    if row is None:
-        raise UnknownSeries(f"series_id {series_id} is not registered")
-    secs = float(row[0])
+def _check_grid(interval: timedelta, series: SeriesRef, timestamps) -> None:
+    secs = interval.total_seconds()
     if secs <= 0 or secs >= _UNCHECKABLE_SECONDS:
         return
     for ts in timestamps:
@@ -54,7 +48,7 @@ def _check_grid(cur: Any, schema: str, series_id: int, timestamps) -> None:
         if min(rem, secs - rem) > 1e-6:
             raise MisalignedTimestamp(
                 f"target_time {ts.isoformat()} is off the declared "
-                f"{secs:.0f}s grid of series {series_id} (spec §4.1)"
+                f"{secs:.0f}s grid of series {series!r} (spec §4.1)"
             )
 
 
@@ -62,7 +56,7 @@ def write_forecast_run(
     conn: Any,
     config: StoreConfig,
     *,
-    series_id: int,
+    series: SeriesRef,
     model: str,
     points: Sequence[Point],
     available_at: datetime,
@@ -72,10 +66,11 @@ def write_forecast_run(
     context_start: datetime | None = None,
     context_end: datetime | None = None,
     params: Mapping[str, Any] | None = None,
-):
+) -> UUID:
     """Insert a run and its forecast points; returns the run_id.
 
-    ``table`` names the forecast-log instance (validated against the store's
+    ``series`` is the registered name or ``series_id``. ``table`` names the
+    forecast-log instance (validated against the store's
     own ``store_tables`` declaration — it must exist and carry run
     provenance); ``runs`` is shared across instances. ``points`` maps declared
     value-column names (``mean``, ``q50``, ...) to values; undeclared columns
@@ -92,6 +87,7 @@ def write_forecast_run(
         used_cols.update(values)
 
     with conn.cursor() as cur:
+        series_id, interval = _lookup(cur, s, series)
         declaration = _table_declaration(cur, s, table)
         if not declaration.get("has_runs"):
             raise ValueError(f"{table!r} is not a forecast log (no run provenance)")
@@ -102,7 +98,7 @@ def write_forecast_run(
                 f"columns {sorted(unknown)} are not declared by {table!r} "
                 f"(value columns: {declared})"
             )
-        _check_grid(cur, s, series_id, (ts for ts, _ in points))
+        _check_grid(interval, series, (ts for ts, _ in points))
         cols = [c for c in declared if c in used_cols]
         cur.execute(
             f"INSERT INTO {s}.runs "
@@ -137,7 +133,7 @@ def write_forecast_run(
 def write_actuals(
     conn: Any,
     config: StoreConfig,
-    series_id: int,
+    series: SeriesRef,
     points: Sequence[tuple],
     *,
     available_at: datetime | None = None,
@@ -145,7 +141,8 @@ def write_actuals(
 ) -> None:
     """Ingest observations. Idempotent (``ON CONFLICT DO NOTHING``).
 
-    ``table`` names an actuals-role instance; its stored declaration supplies
+    ``series`` is the registered name or ``series_id``. ``table`` names an
+    actuals-role instance; its stored declaration supplies
     the tier and optional columns. Points are ``(target_time, value)`` — or
     ``(target_time, value, target_time_observed)`` on instances that declare
     the observed column (spec §6.1; the third element may be None).
@@ -168,6 +165,7 @@ def write_actuals(
 
     s = config.schema
     with conn.cursor() as cur:
+        series_id, interval = _lookup(cur, s, series)
         declaration = _table_declaration(cur, s, table)
         if declaration.get("role") != "actuals":
             raise ValueError(f"{table!r} is not an actuals instance")
@@ -177,7 +175,7 @@ def write_actuals(
             raise ValueError(
                 f"{table!r} does not declare target_time_observed (spec §6.1)"
             )
-        _check_grid(cur, s, series_id, (p[0] for p in points))
+        _check_grid(interval, series, (p[0] for p in points))
 
         cols = ["series_id", "target_time"]
         row_tail: list[Any] = []
@@ -215,19 +213,21 @@ def write_actuals(
 def write_predictors(
     conn: Any,
     config: StoreConfig,
-    series_id: int,
+    series: SeriesRef,
     points: Sequence[tuple[datetime, datetime, float | None]],
 ) -> None:
     """Ingest external forecast vintages as ``(target_time, available_at, value)``.
 
-    ``available_at`` is the vendor publication time — the natural vintage key
+    ``series`` is the registered name or ``series_id``. ``available_at`` is
+    the vendor publication time — the natural vintage key
     (spec §6.2). ``value`` is the vendor's point value; its statistic
     (deterministic run, ensemble mean, median) is per-feed registry metadata,
     never a column-name claim. Idempotent.
     """
     s = config.schema
     with conn.cursor() as cur:
-        _check_grid(cur, s, series_id, (ts for ts, _, _ in points))
+        series_id, interval = _lookup(cur, s, series)
+        _check_grid(interval, series, (ts for ts, _, _ in points))
         cur.executemany(
             f"INSERT INTO {s}.predictors (series_id, target_time, available_at, value) "
             "VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",

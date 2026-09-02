@@ -145,3 +145,81 @@ def test_hypertables_and_self_description(conn):
             "WHERE table_name = 'forecasts'"
         )
         assert "0.95" in cur.fetchone()[0]
+
+
+def test_config_from_store(conn):
+    """StoreConfig.from_store rebuilds the declaration from store_tables alone
+    (spec §5.2): the canonical switches round-trip, the result re-provisions
+    as a no-op, and a missing store is named, not guessed."""
+    from forecast_store.config import StoreConfig
+    from forecast_store.provision import NotProvisioned, provision
+
+    loaded = StoreConfig.from_store(conn)
+    declared = StoreConfig()
+    # Canonical switches round-trip. (Extra instances are covered in
+    # test_multi_instance; a shared test store may legitimately carry some.)
+    assert loaded.schema == "forecast"
+    assert loaded.quantile_band == declared.quantile_band
+    assert loaded.has_mean == declared.has_mean
+    assert loaded.actuals_revisions == declared.actuals_revisions
+    assert loaded.enforcement == declared.enforcement
+    # provision() re-issues CREATE OR REPLACE VIEW (ACCESS EXCLUSIVE); end this
+    # connection's read transaction first so its share locks cannot block it.
+    conn.rollback()
+    assert provision(DSN, loaded).already_provisioned  # drift-free by construction
+
+    with pytest.raises(NotProvisioned, match="no_such_store"):
+        StoreConfig.from_store(conn, schema="no_such_store")
+    with pytest.raises(ValueError, match="identifier"):
+        StoreConfig.from_store(conn, schema="Bad-Name; --")
+
+
+def test_python_resolvers_and_series_refs(conn):
+    """register_series / get_series_id are the SDK face of the SQL resolvers
+    (schema from the config, UnknownSeries instead of a Postgres exception),
+    and every read/write accepts the name or the id interchangeably."""
+    from forecast_store.config import StoreConfig
+    from forecast_store.read import read_context_series
+    from forecast_store.series import UnknownSeries, get_series_id, register_series
+    from forecast_store.write import write_forecast_run
+
+    config = StoreConfig()
+    sid = register_series(conn, config, "smoke_test", timedelta(minutes=15))
+    assert register_series(conn, config, "smoke_test", "15 minutes") == sid  # get-or-create
+    assert get_series_id(conn, config, "smoke_test") == sid
+    with pytest.raises(UnknownSeries):
+        get_series_id(conn, config, "smoke_test_typo")
+
+    # Away from the other tests' target window; run label shared for cleanup.
+    target = T0 + timedelta(days=2)
+    common = dict(model="constant", run_name="smoke", points=[(target, {"q50": 1.0})])
+    by_name = write_forecast_run(
+        conn, config, series="smoke_test", available_at=SIM_AVAILABLE, **common
+    )
+    by_id = write_forecast_run(
+        conn, config, series=sid, available_at=SIM_AVAILABLE + timedelta(hours=1),
+        **{**common, "points": [(target, {"q50": 2.0})]},
+    )
+    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT DISTINCT series_id FROM forecast.forecasts WHERE run_id IN (%s, %s)",
+            (by_name, by_id),
+        )
+        assert cur.fetchall() == [(sid,)]  # both spellings hit the same series
+    for ref in ("smoke_test", sid):
+        _, rows = read_context_series(
+            conn, config, ref, table="forecasts", column="q50",
+            start=target, end=target + timedelta(minutes=15),
+            asof=SIM_AVAILABLE + timedelta(hours=1),
+        )
+        assert [v for _, _, v in rows] == [2.0]
+
+    with pytest.raises(UnknownSeries):
+        write_forecast_run(
+            conn, config, series="smoke_test_typo", available_at=SIM_AVAILABLE, **common
+        )
+    conn.rollback()
+    with pytest.raises(TypeError, match="registered name"):
+        write_forecast_run(conn, config, series=1.5, available_at=SIM_AVAILABLE, **common)
+    conn.rollback()

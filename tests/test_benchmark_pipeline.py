@@ -39,6 +39,7 @@ def seeded(request):
 
     from forecast_store.config import StoreConfig
     from forecast_store.provision import provision
+    from forecast_store.series import register_series
     from forecast_store.write import write_predictors
 
     config = StoreConfig()
@@ -48,17 +49,11 @@ def seeded(request):
     _cleanup(conn)
     request.addfinalizer(lambda: _cleanup(conn))
 
-    with conn.cursor() as cur:
-        cur.execute("SELECT forecast.register_series(%s, interval '1 hour')", (LOAD,))
-        load_id = cur.fetchone()[0]
-        weather_ids = {}
-        for col in WEATHER_COLS:
-            cur.execute(
-                "SELECT forecast.register_series(%s, interval '1 hour')",
-                (_weather_series(col),),
-            )
-            weather_ids[col] = cur.fetchone()[0]
+    load_id = register_series(conn, config, LOAD, HOUR)
+    for col in WEATHER_COLS:
+        register_series(conn, config, _weather_series(col), HOUR)
 
+    with conn.cursor() as cur:
         # Measurements: deterministic daily/weekly pattern, claims at target time
         # (backfill with per-row availability so backtest cutoffs see history).
         hours = int((DATA_END - T0) / HOUR)
@@ -83,7 +78,7 @@ def seeded(request):
         write_predictors(
             conn,
             config,
-            weather_ids[col],
+            _weather_series(col),
             [(T0 + i * HOUR, T0, 10.0 + (i % 24)) for i in range(hours)],
         )
     conn.commit()

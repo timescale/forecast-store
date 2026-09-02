@@ -30,6 +30,7 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from forecast_store.config import StoreConfig
+from forecast_store.errors import InvalidDeclaration
 from forecast_store.queries import forecast_asof as _forecast_asof_sql
 from forecast_store.read import read_context_series, read_versioned_series
 from forecast_store.series import SeriesRef, get_series_id, register_series
@@ -49,7 +50,9 @@ ConnectionSource = str | _Pool
 def _schema_for(config: StoreConfig | None, schema: str | None) -> str:
     """The schema a store-bound object works in; a contradicting pair is a caller bug."""
     if config is not None and schema is not None and schema != config.schema:
-        raise ValueError(f"schema {schema!r} conflicts with config.schema {config.schema!r}")
+        raise InvalidDeclaration(
+            f"schema {schema!r} conflicts with config.schema {config.schema!r}"
+        )
     return config.schema if config is not None else (schema or "forecast")
 
 

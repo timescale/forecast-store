@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Iterable, Literal
 
+from forecast_store.errors import InvalidDeclaration
 from forecast_store.naming import _as_level, quantile_column
 
 CONVENTION_VERSION = "0.4.0"
@@ -135,23 +136,23 @@ class StoreConfig:
         import dataclasses
 
         if not _IDENT_RE.match(self.schema):
-            raise ValueError(f"schema must be a plain lowercase identifier, got {self.schema!r}")
+            raise InvalidDeclaration(f"schema must be a plain lowercase identifier, got {self.schema!r}")
         levels = tuple(sorted({_as_level(q) for q in self.quantile_band}))
         if not levels and not self.has_mean:
-            raise ValueError("store must have at least one value column (band or mean)")
+            raise InvalidDeclaration("store must have at least one value column (band or mean)")
         object.__setattr__(self, "quantile_band", levels)
         if self.enforcement not in ("monitor", "fk"):
-            raise ValueError(f"enforcement must be 'monitor' or 'fk', got {self.enforcement!r}")
+            raise InvalidDeclaration(f"enforcement must be 'monitor' or 'fk', got {self.enforcement!r}")
 
         seen: set[str] = set()
         normalized: list[TableSpec] = []
         for spec in self.extra_tables:
             if not _IDENT_RE.match(spec.name):
-                raise ValueError(f"table name must be a plain lowercase identifier: {spec.name!r}")
+                raise InvalidDeclaration(f"table name must be a plain lowercase identifier: {spec.name!r}")
             if spec.name in RESERVED_TABLES:
-                raise ValueError(f"table name {spec.name!r} shadows a canonical table")
+                raise InvalidDeclaration(f"table name {spec.name!r} shadows a canonical table")
             if spec.name in seen:
-                raise ValueError(f"duplicate extra table name: {spec.name!r}")
+                raise InvalidDeclaration(f"duplicate extra table name: {spec.name!r}")
             seen.add(spec.name)
             if isinstance(spec, ForecastLogSpec):
                 band = (
@@ -160,12 +161,12 @@ class StoreConfig:
                     else tuple(sorted({_as_level(q) for q in spec.quantile_band}))
                 )
                 if not band and not spec.has_mean:
-                    raise ValueError(f"{spec.name!r} must have at least one value column")
+                    raise InvalidDeclaration(f"{spec.name!r} must have at least one value column")
                 spec = dataclasses.replace(spec, quantile_band=band)
             elif isinstance(spec, PredictorLogSpec):
                 band = tuple(sorted({_as_level(q) for q in spec.quantile_band}))
                 if not band and not spec.has_value:
-                    raise ValueError(f"{spec.name!r} must have at least one value column")
+                    raise InvalidDeclaration(f"{spec.name!r} must have at least one value column")
                 spec = dataclasses.replace(spec, quantile_band=band)
             normalized.append(spec)
         normalized.sort(key=lambda spec: spec.name)  # declaration order is not significant
@@ -196,7 +197,7 @@ class StoreConfig:
         from forecast_store.provision import NotProvisioned
 
         if not _IDENT_RE.match(schema):
-            raise ValueError(f"schema must be a plain lowercase identifier, got {schema!r}")
+            raise InvalidDeclaration(f"schema must be a plain lowercase identifier, got {schema!r}")
         with conn.cursor() as cur:
             cur.execute("SELECT to_regclass(%s)", (f"{schema}.store_tables",))
             if cur.fetchone()[0] is None:

@@ -28,18 +28,15 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from forecast_store.config import StoreConfig
-from forecast_store.series import SeriesRef, UnknownSeries, _lookup
+from forecast_store.errors import DeclarationMismatch, UnknownSeries, UnknownTable
+from forecast_store.series import SeriesRef, _lookup
 
 __all__ = [
-    "UnknownSeries",  # defined in forecast_store.series; re-exported here
+    "UnknownSeries",  # errors re-exported for the import paths readers already use
     "UnknownTable",
     "read_context_series",
     "read_versioned_series",
 ]
-
-
-class UnknownTable(Exception):
-    """The table is not declared in store_tables."""
 
 
 def _table_declaration(cur, schema: str, table: str) -> dict[str, Any]:
@@ -71,12 +68,14 @@ def _resolve(
     series_id, interval = _lookup(cur, config.schema, series)
     declaration = _table_declaration(cur, config.schema, table)
     if column not in declaration["value_columns"]:
-        raise ValueError(
+        raise DeclarationMismatch(
             f"{column!r} is not a declared value column of {table!r} "
-            f"({declaration['value_columns']})"
+            f"(declared: {declaration['value_columns']}); pick one with column="
         )
     if run_name is not None and not declaration.get("has_runs"):
-        raise ValueError(f"run_name only applies to run-bearing tables, not {table!r}")
+        raise DeclarationMismatch(
+            f"run_name only applies to run-bearing tables, not {table!r}"
+        )
     return series_id, interval, declaration["knowledge_column"]
 
 

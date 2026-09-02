@@ -35,7 +35,18 @@ from typing import Any
 from uuid import UUID
 
 from forecast_store.config import StoreConfig
+from forecast_store.errors import ConflictingBelief, DeclarationMismatch, MisalignedTimestamp
+from forecast_store.read import _table_declaration
 from forecast_store.series import SeriesRef, _lookup
+
+__all__ = [
+    "ConflictingBelief",  # errors re-exported for the import paths writers already use
+    "MisalignedTimestamp",
+    "Point",
+    "write_actuals",
+    "write_forecast_run",
+    "write_predictors",
+]
 
 #: ``(target_time, values)``: ``values`` maps declared columns to values, or is
 #: a bare scalar for a table with exactly one value column.
@@ -46,16 +57,6 @@ Point = tuple[datetime, Mapping[str, Any] | float | None]
 _GRID_ORIGIN = datetime(2000, 1, 3, tzinfo=timezone.utc).timestamp()
 _UNCHECKABLE_SECONDS = 28 * 86400  # month-sized intervals have no fixed stride
 _OBSERVED = "target_time_observed"
-
-
-class MisalignedTimestamp(ValueError):
-    """A target_time off the series' declared bucket grid (spec §4.1)."""
-
-
-class ConflictingBelief(ValueError):
-    """A single-belief table already holds a different value for this target
-    (spec §6.1). Raised by the generated ``belief_guard`` trigger; identical
-    re-delivery is silently idempotent instead."""
 
 
 def _check_grid(interval: timedelta, series: SeriesRef, timestamps) -> None:
@@ -99,7 +100,7 @@ def _normalize(
     for ts, values in points:
         if not isinstance(values, Mapping):
             if len(value_columns) != 1:
-                raise ValueError(
+                raise DeclarationMismatch(
                     f"{table!r} declares {len(value_columns)} value columns "
                     f"{value_columns}: pass a mapping of column -> value, not a bare scalar"
                 )
@@ -107,11 +108,11 @@ def _normalize(
         unknown = set(values) - set(writable)
         if unknown:
             if knowledge_col in unknown and not per_point_knowledge:
-                raise ValueError(
+                raise DeclarationMismatch(
                     f"{table!r} is a forecast log: its knowledge time is the run's "
                     f"available_at, not a per-point column (spec §4.1)"
                 )
-            raise ValueError(
+            raise DeclarationMismatch(
                 f"columns {sorted(unknown)} are not declared by {table!r} "
                 f"(writable columns: {writable})"
             )
@@ -154,14 +155,12 @@ def write_forecast_run(
     """
     from psycopg.types.json import Jsonb
 
-    from forecast_store.read import _table_declaration
-
     s = config.schema
     with conn.cursor() as cur:
         series_id, interval = _lookup(cur, s, series)
         declaration = _table_declaration(cur, s, table)
         if not declaration.get("has_runs"):
-            raise ValueError(f"{table!r} is not a forecast log (no run provenance)")
+            raise DeclarationMismatch(f"{table!r} is not a forecast log (no run provenance)")
         cols, rows = _normalize(table, declaration, points, per_point_knowledge=False)
         _check_grid(interval, series, (ts for ts, _ in rows))
         knowledge_col = declaration["knowledge_column"]
@@ -228,14 +227,12 @@ def write_actuals(
     """
     import psycopg
 
-    from forecast_store.read import _table_declaration
-
     s = config.schema
     with conn.cursor() as cur:
         series_id, interval = _lookup(cur, s, series)
         declaration = _table_declaration(cur, s, table)
         if declaration.get("role") != "actuals":
-            raise ValueError(f"{table!r} is not an actuals instance")
+            raise DeclarationMismatch(f"{table!r} is not an actuals instance")
         cols, rows = _normalize(table, declaration, points, per_point_knowledge=True)
         _check_grid(interval, series, (ts for ts, _ in rows))
         if not rows:
@@ -299,14 +296,12 @@ def write_predictors(
     The value's statistic (deterministic run, ensemble mean, median) is
     per-feed registry metadata, never a column-name claim.
     """
-    from forecast_store.read import _table_declaration
-
     s = config.schema
     with conn.cursor() as cur:
         series_id, interval = _lookup(cur, s, series)
         declaration = _table_declaration(cur, s, table)
         if declaration.get("role") != "predictors":
-            raise ValueError(f"{table!r} is not a predictors instance")
+            raise DeclarationMismatch(f"{table!r} is not a predictors instance")
         cols, rows = _normalize(table, declaration, points, per_point_knowledge=True)
         _check_grid(interval, series, (ts for ts, _ in rows))
         if not rows:
@@ -315,7 +310,7 @@ def write_predictors(
         data_cols = [c for c in cols if c != knowledge_col]
         stated = [_stated(values, knowledge_col, available_at) for _, values in rows]
         if any(k is None for k in stated):
-            raise ValueError(
+            raise DeclarationMismatch(
                 f"{table!r} needs a knowledge time on every point: pass available_at per "
                 "point or for the call — vendor publication is stated, never defaulted "
                 "(spec §6.2)"

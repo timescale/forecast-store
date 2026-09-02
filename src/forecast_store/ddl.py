@@ -16,6 +16,7 @@ import json
 from decimal import Decimal
 from typing import Mapping
 
+from forecast_store.errors import InvalidDeclaration
 from forecast_store.naming import quantile_column
 from forecast_store.config import (
     CONVENTION_VERSION,
@@ -443,7 +444,7 @@ def config_from_tables(
     try:
         forecasts, actuals = declarations["forecasts"], declarations["actuals"]
     except KeyError as exc:
-        raise ValueError(f"store_tables lacks the canonical {exc} declaration") from None
+        raise InvalidDeclaration(f"store_tables lacks the canonical {exc} declaration") from None
 
     def band(declaration: Mapping[str, object]) -> tuple[Decimal, ...]:
         levels = declaration.get("quantile_band", ())
@@ -474,7 +475,7 @@ def config_from_tables(
                 )
             )
         else:
-            raise ValueError(f"store_tables declares {name!r} with unknown role {role!r}")
+            raise InvalidDeclaration(f"store_tables declares {name!r} with unknown role {role!r}")
 
     return StoreConfig(
         quantile_band=band(forecasts),

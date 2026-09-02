@@ -13,14 +13,9 @@ from typing import Any
 
 from forecast_store.config import StoreConfig
 from forecast_store.ddl import generate_ddl, hypertable_ddl, table_configs
+from forecast_store.errors import MigrationRequired, NotProvisioned
 
-
-class MigrationRequired(Exception):
-    """The store's recorded declaration differs from the requested one."""
-
-
-class NotProvisioned(Exception):
-    """No forecast store exists at the given schema (no ``store_tables``)."""
+__all__ = ["MigrationRequired", "NotProvisioned", "ProvisionReport", "provision"]
 
 
 @dataclass(frozen=True)

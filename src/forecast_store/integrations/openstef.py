@@ -38,6 +38,7 @@ from openstef_models.workflows.custom_forecasting_workflow import (
 from dataclasses import dataclass
 
 from forecast_store.config import StoreConfig
+from forecast_store.errors import DeclarationMismatch
 from forecast_store.naming import quantile_column
 from forecast_store.store import ConnectionSource, Store, _schema_for
 
@@ -197,7 +198,7 @@ class StoreReader:
             self._config = store.config  # keep the resolved declaration for later calls
 
         if len(set(intervals.values())) > 1:
-            raise ValueError(f"series are on different grids: {intervals}")
+            raise DeclarationMismatch(f"series are on different grids: {intervals}")
 
         frame = pd.DataFrame(columns).sort_index()
         dataset = TimeSeriesDataset(data=frame, sample_interval=interval)
@@ -306,7 +307,7 @@ class ForecastStoreCallback(ForecastingCallback):
         for q in result.quantiles:
             level = Decimal(str(float(q)))
             if level not in config.quantile_band:
-                raise ValueError(
+                raise DeclarationMismatch(
                     f"forecast quantile {level} is not in the store's declared band "
                     f"{[str(b) for b in config.quantile_band]}; connectors must "
                     "meet the band (spec §7.3)"

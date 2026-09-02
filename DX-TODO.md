@@ -139,13 +139,14 @@ owns the transaction. Items are ranked by impact; check them off as they land.
 
 ## Second slice
 
-- [ ] **7. Exceptions have no common base.**
-  `MisalignedTimestamp` and `ConflictingBelief` subclass `ValueError`;
-  `UnknownSeries`, `UnknownTable`, `MigrationRequired` subclass `Exception`;
-  undeclared columns raise plain `ValueError`.
-  - Add `ForecastStoreError` base in a new `forecast_store/errors.py`
-  - Move all exceptions there; remove the lazy `read` import from `write.py`
-  - Replace the plain `ValueError` for undeclared columns with a typed error
+- [x] **7. Exceptions have no common base.**
+  `MisalignedTimestamp` and `ConflictingBelief` subclassed `ValueError`;
+  `UnknownSeries`, `UnknownTable`, `MigrationRequired` subclassed `Exception`;
+  undeclared columns raised plain `ValueError`.
+  - [x] `ForecastStoreError` base in new `forecast_store/errors.py`; every SDK error derives from it and keeps the built-in a caller would expect as a co-base (`LookupError` for unknown series/table, `ValueError` for refused requests)
+  - [x] All exceptions moved there; old import paths (`write.`, `read.`, `series.`, `provision.`) still resolve; the lazy `read` import in `write.py` is a top-level import
+  - [x] Plain `ValueError`s replaced: `DeclarationMismatch` (a request contradicting a table's stored declaration — columns, scalar sugar, knowledge time, role, band) and `InvalidDeclaration` (a `StoreConfig`/binding that cannot describe a store)
+  - [x] `ConflictingBelief` is no longer a `ValueError`: a conflict with stored data must not be swallowed by `except ValueError` around a write
 
 - [ ] **8. Reads return bare tuples.**
   `read_context_series` returns `(interval, [(ts, raw, value)])`;

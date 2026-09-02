@@ -23,25 +23,24 @@ from forecast_store.config import (
     TableSpec,
 )
 from forecast_store.ddl import generate_ddl, hypertable_ddl, table_configs
-from forecast_store.naming import parse_quantile_column, quantile_column
-from forecast_store.provision import (
-    MigrationRequired,
-    NotProvisioned,
-    ProvisionReport,
-    provision,
-)
-from forecast_store.queries import forecast_asof
-from forecast_store.read import UnknownTable, read_context_series, read_versioned_series
-from forecast_store.series import SeriesRef, UnknownSeries, get_series_id, register_series
-from forecast_store.store import ConnectionSource, Store
-from forecast_store.write import (
+from forecast_store.errors import (
     ConflictingBelief,
+    DeclarationMismatch,
+    ForecastStoreError,
+    InvalidDeclaration,
+    MigrationRequired,
     MisalignedTimestamp,
-    Point,
-    write_actuals,
-    write_forecast_run,
-    write_predictors,
+    NotProvisioned,
+    UnknownSeries,
+    UnknownTable,
 )
+from forecast_store.naming import parse_quantile_column, quantile_column
+from forecast_store.provision import ProvisionReport, provision
+from forecast_store.queries import forecast_asof
+from forecast_store.read import read_context_series, read_versioned_series
+from forecast_store.series import SeriesRef, get_series_id, register_series
+from forecast_store.store import ConnectionSource, Store
+from forecast_store.write import Point, write_actuals, write_forecast_run, write_predictors
 
 __version__ = "0.0.1.dev0"
 
@@ -79,8 +78,11 @@ __all__ = [
     # naming
     "quantile_column",
     "parse_quantile_column",
-    # errors
+    # errors — all under ForecastStoreError
+    "ForecastStoreError",
     "ConflictingBelief",
+    "DeclarationMismatch",
+    "InvalidDeclaration",
     "MigrationRequired",
     "MisalignedTimestamp",
     "NotProvisioned",

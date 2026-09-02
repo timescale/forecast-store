@@ -21,13 +21,12 @@ from numbers import Integral
 from typing import Any, Mapping
 
 from forecast_store.config import StoreConfig
+from forecast_store.errors import UnknownSeries
+
+__all__ = ["SeriesRef", "UnknownSeries", "get_series_id", "register_series"]
 
 #: A registered series name, or its ``series_id``.
 SeriesRef = str | int
-
-
-class UnknownSeries(Exception):
-    """The series is not registered in the store."""
 
 
 def register_series(

@@ -115,18 +115,15 @@ class TimescaleTargetProvider(TargetProvider[BenchmarkTarget, None]):
     def _read_versioned(
         self, store: Store, series_name: str, target: BenchmarkTarget, column: str, table: str
     ):
-        import pandas as pd
-
-        interval, rows = store.read_versioned_series(
+        versioned = store.read_versioned_series(
             series_name,
             table=table,
             start=target.train_start,
             end=target.benchmark_end + self.data_margin,
             recorded_before=self.recorded_before,
         )
-        frame = pd.DataFrame(rows, columns=["timestamp", "available_at", column])
-        _utc_normalize(frame, ("timestamp", "available_at"))
-        return VersionedTimeSeriesDataset.from_dataframe(frame, interval)
+        frame = versioned.to_pandas().rename(columns={"target_time": "timestamp", "value": column})
+        return VersionedTimeSeriesDataset.from_dataframe(frame, versioned.sample_interval)
 
     def get_targets(self, filter_args: None = None) -> list[BenchmarkTarget]:
         return list(self.targets)

@@ -148,11 +148,11 @@ owns the transaction. Items are ranked by impact; check them off as they land.
   - [x] Plain `ValueError`s replaced: `DeclarationMismatch` (a request contradicting a table's stored declaration — columns, scalar sugar, knowledge time, role, band) and `InvalidDeclaration` (a `StoreConfig`/binding that cannot describe a store)
   - [x] `ConflictingBelief` is no longer a `ValueError`: a conflict with stored data must not be swallowed by `except ValueError` around a write
 
-- [ ] **8. Reads return bare tuples.**
-  `read_context_series` returns `(interval, [(ts, raw, value)])`;
-  `StoreReader` immediately rebuilds a pandas Series from them.
-  - Return a small result object (interval + rows) with a `to_pandas()` helper
-  - Make the `column` default explicit in docs, or error early: `"value"` is only valid for actuals/predictors, not forecast logs
+- [x] **8. Reads return bare tuples.**
+  `read_context_series` returned `(interval, [(ts, raw, value)])`;
+  `StoreReader` immediately rebuilt a pandas Series from them.
+  - [x] `ContextSeries` / `VersionedSeries` named tuples: still unpack as `(sample_interval, rows)`, add `.gaps` and `.to_pandas()` (UTC-canonical index/columns; pandas imported lazily, not a dependency). Both adapters use them
+  - [x] `column` default documented on the read (`value` = actuals/canonical predictors; forecast logs need a band column or `mean`); the mismatch error says to pick one with `column=` (landed with item 7)
 
 - [ ] **9. Naive datetimes are not rejected.**
   `_check_grid` calls `.timestamp()`, which treats naive datetimes as local

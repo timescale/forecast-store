@@ -37,7 +37,12 @@ from forecast_store.errors import (
 from forecast_store.naming import parse_quantile_column, quantile_column
 from forecast_store.provision import ProvisionReport, provision
 from forecast_store.queries import forecast_asof
-from forecast_store.read import read_context_series, read_versioned_series
+from forecast_store.read import (
+    ContextSeries,
+    VersionedSeries,
+    read_context_series,
+    read_versioned_series,
+)
 from forecast_store.series import SeriesRef, get_series_id, register_series
 from forecast_store.store import ConnectionSource, Store
 from forecast_store.write import Point, write_actuals, write_forecast_run, write_predictors
@@ -74,6 +79,8 @@ __all__ = [
     # reads and queries
     "read_context_series",
     "read_versioned_series",
+    "ContextSeries",
+    "VersionedSeries",
     "forecast_asof",
     # naming
     "quantile_column",

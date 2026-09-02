@@ -144,7 +144,7 @@ class StoreReader:
         intervals: dict[str, Any] = {}
 
         with Store.connect(self._source, self._config, schema=self._schema) as store:
-            interval, rows = store.read_context_series(
+            target = store.read_context_series(
                 target_series,
                 table="actuals",  # the target's measured history, by contract (§9.3)
                 start=history_start,
@@ -153,11 +153,9 @@ class StoreReader:
                 # asof must not see later revisions (Tier 2) or later loads (Tier 1)
                 recorded_before=recorded_before,
             )
-            intervals[target_series] = interval
-            columns[target_column] = pd.Series(
-                {ts: value for ts, _, value in rows}, dtype=float
-            )
-            gap_stats[target_column] = sum(1 for _, raw, _ in rows if raw is None)
+            intervals[target_series] = target.sample_interval
+            columns[target_column] = target.to_pandas()
+            gap_stats[target_column] = target.gaps
 
             sources: dict[str, Any] = {target_column: target_series}
             for column, spec in covariates.items():
@@ -182,7 +180,7 @@ class StoreReader:
                     # Plain name: a vendor feed, the common covariate case.
                     series_name, extra = spec, {"table": "predictors"}
                     sources[column] = {"series": spec, "table": "predictors"}
-                interval, rows = store.read_context_series(
+                window = store.read_context_series(
                     series_name,
                     start=history_start,
                     end=horizon_end,
@@ -190,15 +188,14 @@ class StoreReader:
                     recorded_before=recorded_before,
                     **extra,
                 )
-                intervals[series_name] = interval
-                columns[column] = pd.Series(
-                    {ts: value for ts, _, value in rows}, dtype=float
-                )
-                gap_stats[column] = sum(1 for _, raw, _ in rows if raw is None)
+                intervals[series_name] = window.sample_interval
+                columns[column] = window.to_pandas()
+                gap_stats[column] = window.gaps
             self._config = store.config  # keep the resolved declaration for later calls
 
         if len(set(intervals.values())) > 1:
             raise DeclarationMismatch(f"series are on different grids: {intervals}")
+        (interval,) = set(intervals.values())
 
         frame = pd.DataFrame(columns).sort_index()
         dataset = TimeSeriesDataset(data=frame, sample_interval=interval)

@@ -32,7 +32,12 @@ from uuid import UUID
 from forecast_store.config import StoreConfig
 from forecast_store.errors import InvalidDeclaration
 from forecast_store.queries import forecast_asof as _forecast_asof_sql
-from forecast_store.read import read_context_series, read_versioned_series
+from forecast_store.read import (
+    ContextSeries,
+    VersionedSeries,
+    read_context_series,
+    read_versioned_series,
+)
 from forecast_store.series import SeriesRef, get_series_id, register_series
 from forecast_store.write import Point, write_actuals, write_forecast_run, write_predictors
 
@@ -212,7 +217,7 @@ class Store:
         column: str = "value",
         recorded_before: datetime | None = None,
         run_name: str | None = None,
-    ) -> tuple[timedelta, list[tuple[datetime, float | None, float | None]]]:
+    ) -> ContextSeries:
         """Leakage-free window; see :func:`forecast_store.read.read_context_series`."""
         return read_context_series(
             self.conn, self.config, series,
@@ -229,7 +234,7 @@ class Store:
         end: datetime,
         column: str = "value",
         recorded_before: datetime | None = None,
-    ) -> tuple[timedelta, list[tuple[datetime, datetime, float | None]]]:
+    ) -> VersionedSeries:
         """Belief-log export; see :func:`forecast_store.read.read_versioned_series`."""
         return read_versioned_series(
             self.conn, self.config, series,

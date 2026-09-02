@@ -17,26 +17,87 @@ one-pass TimescaleDB form: ``locf(last(value, knowledge))`` inside
 is leakage-free by construction: a belief claimed after that moment cannot be
 returned (spec §9.1/§9.3).
 
-Rows come back as ``(ts, raw_value, value)`` — ``raw_value`` is NULL for
-buckets that had no data (feeding the gap budget); ``value`` is the
-locf-filled series.
+Results are small named tuples — :class:`ContextSeries`,
+:class:`VersionedSeries` — that still unpack as ``(sample_interval, rows)``
+and add the common follow-ups: ``.gaps`` and ``.to_pandas()`` (pandas is
+imported only then; it is not a dependency of this package).
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, NamedTuple
 
 from forecast_store.config import StoreConfig
 from forecast_store.errors import DeclarationMismatch, UnknownSeries, UnknownTable
 from forecast_store.series import SeriesRef, _lookup
 
 __all__ = [
+    "ContextSeries",
     "UnknownSeries",  # errors re-exported for the import paths readers already use
     "UnknownTable",
+    "VersionedSeries",
     "read_context_series",
     "read_versioned_series",
 ]
+
+
+def _pandas():
+    try:
+        import pandas as pd
+    except ImportError as exc:  # pragma: no cover
+        raise ImportError(
+            "to_pandas() needs pandas, which forecast-store does not depend on: "
+            "pip install pandas"
+        ) from exc
+    return pd
+
+
+class ContextSeries(NamedTuple):
+    """One regularized window (spec §9.3), from :func:`read_context_series`.
+
+    Unpacks as ``(sample_interval, rows)``. Rows are ``(ts, raw_value,
+    value)`` on the declared grid: ``raw_value`` is None where the bucket had
+    no data, ``value`` is the locf-filled series a model consumes.
+    """
+
+    sample_interval: timedelta
+    rows: list[tuple[datetime, float | None, float | None]]
+
+    @property
+    def gaps(self) -> int:
+        """Buckets with no data of their own (filled by locf) — the gap budget."""
+        return sum(1 for _, raw, _ in self.rows if raw is None)
+
+    def to_pandas(self):
+        """The filled series as a float ``pandas.Series`` named ``value`` on a
+        UTC ``DatetimeIndex`` named ``target_time``."""
+        pd = _pandas()
+        index = pd.to_datetime([ts for ts, _, _ in self.rows], utc=True)
+        index.name = "target_time"
+        return pd.Series([v for _, _, v in self.rows], index=index, dtype=float, name="value")
+
+
+class VersionedSeries(NamedTuple):
+    """A belief-log export (spec §9.2), from :func:`read_versioned_series`.
+
+    Unpacks as ``(sample_interval, rows)``. Rows are ``(target_time,
+    available_at, value)`` ordered by target then knowledge — every vintage,
+    for engines that apply their own cutoffs.
+    """
+
+    sample_interval: timedelta
+    rows: list[tuple[datetime, datetime, float | None]]
+
+    def to_pandas(self):
+        """A ``DataFrame`` with columns ``target_time``, ``available_at``
+        (both UTC) and float ``value``."""
+        pd = _pandas()
+        frame = pd.DataFrame(self.rows, columns=["target_time", "available_at", "value"])
+        for column in ("target_time", "available_at"):
+            frame[column] = pd.to_datetime(frame[column], utc=True)
+        frame["value"] = frame["value"].astype(float)
+        return frame
 
 
 def _table_declaration(cur, schema: str, table: str) -> dict[str, Any]:
@@ -91,15 +152,16 @@ def read_context_series(
     column: str = "value",
     recorded_before: datetime | None = None,
     run_name: str | None = None,
-) -> tuple[timedelta, list[tuple[datetime, float | None, float | None]]]:
+) -> ContextSeries:
     """One regularized series window on the declared grid.
 
     ``series`` is the registered name or ``series_id``. ``table`` names the
     source (validated against ``store_tables``): the series' measurements
     (``actuals``), a vendor feed (``predictors``), or a forecast log
-    (``forecasts`` — pick ``column`` from its declared band; ``run_name``
-    optionally pins the producing job, otherwise the latest vintage across
-    all producers wins).
+    (``forecasts`` — ``run_name`` optionally pins the producing job, otherwise
+    the latest vintage across all producers wins). ``column`` defaults to
+    ``value``, the one value column of actuals and canonical predictors; a
+    forecast log has none, so name one of its band columns or ``mean``.
 
     ``asof`` — the decision moment — is required on every read: a context read
     is a model input, and a model input always has one. Live reads pass now();
@@ -115,7 +177,8 @@ def read_context_series(
     has an honest meaning: ``recorded_at`` is never client-written, so no row
     is future-dated and an unset pin is exactly "the store as it stands now."
 
-    Returns ``(sample_interval, rows)``.
+    Returns a :class:`ContextSeries`: ``(sample_interval, rows)`` with rows
+    ``(ts, raw_value, value)``, plus ``.gaps`` and ``.to_pandas()``.
     """
     s = config.schema
     with conn.cursor() as cur:
@@ -150,7 +213,7 @@ GROUP BY 1
 ORDER BY 1""",
             [interval, start, end, *params],
         )
-        return interval, cur.fetchall()
+        return ContextSeries(interval, cur.fetchall())
 
 
 def read_versioned_series(
@@ -163,7 +226,7 @@ def read_versioned_series(
     end: datetime,
     column: str = "value",
     recorded_before: datetime | None = None,
-) -> tuple[timedelta, list[tuple[datetime, datetime, float | None]]]:
+) -> VersionedSeries:
     """Belief-log export: the full vintage/revision history of one series.
 
     This is NOT a context read — it deliberately takes no ``asof``. It serves
@@ -175,8 +238,9 @@ def read_versioned_series(
     The table's knowledge clock comes from its ``store_tables`` declaration
     (Tier-1 actuals export their measured ``recorded_at``, spec §6.1/§9.2).
 
-    Returns ``(sample_interval, rows)`` with rows
-    ``(target_time, available_at, value)`` ordered by target then knowledge.
+    Returns a :class:`VersionedSeries`: ``(sample_interval, rows)`` with rows
+    ``(target_time, available_at, value)`` ordered by target then knowledge,
+    plus ``.to_pandas()`` for a UTC-canonical frame.
     """
     s = config.schema
     with conn.cursor() as cur:
@@ -198,4 +262,4 @@ WHERE {" AND ".join(predicates)}
 ORDER BY target_time, available_at""",
             params,
         )
-        return interval, cur.fetchall()
+        return VersionedSeries(interval, cur.fetchall())

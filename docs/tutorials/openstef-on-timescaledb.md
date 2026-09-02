@@ -24,6 +24,15 @@ accuracy as a queryable time series. The schema convention itself is documented 
 [the forecast store convention](../forecast-store-convention.md); the adapter reference
 is [docs/integrations/openstef.md](../integrations/openstef.md).
 
+Here's the kind of question one SQL query answers once the store is wired up: for a
+single delivery hour, what did the model believe across all nine vintages it produced as
+that hour approached, and did the band hold?
+
+![Fan chart: nine forecast vintages for one delivery hour (2024-06-03 00:00 UTC, a liander wind park near Arnhem–Nijmegen), 6 hours apart, showing the q10–q50–q90 band from zero-shot Chronos-2 narrowing from 0.186 wide at a 48-hour lead to 0.073 wide at delivery. A dashed line marks what actually happened; the band brackets it throughout even though the actual measurement itself wasn't recorded until 48 hours after delivery.](images/fig0_forecast_evolution.png)
+
+Step 5 shows the query behind this chart — one `JOIN` between `forecast.forecasts` and
+`forecast.runs`, no parquet directory to page through.
+
 ## Prerequisites
 
 - **A Postgres database**, ideally with TimescaleDB (a free
@@ -303,6 +312,13 @@ Zero-shot foundation models beat the trained classical presets by ~23% rCRPS on
 OpenSTEF's own benchmark — and note the detail only a table like this surfaces: xgboost
 and gblinear tie on rCRPS while diverging on the median.
 
+Here's what that table looks like as forecasts, not just scores — four representative
+days for one park (Alphen), zero-shot Chronos-2 and the trained XGBoost preset against
+what actually happened, both pulled straight out of `forecast.forecasts` and
+`forecast.actuals`:
+
+![Line chart: four days of 15-minute wind generation at a park near Alphen aan den Rijn, with day-ahead median forecasts from zero-shot Chronos-2 and the trained XGBoost preset overlaid on the actual generation, plus Chronos-2's q05–q95 uncertainty band. Both models track the wind ramps; Chronos-2 follows the July 16 peak more closely, and its band contains the actuals — including through a calm day where generation sits near zero.](images/fig3_actuals_vs_forecast.png)
+
 ## Step 6 — The production write path
 
 In production, OpenSTEF's `predict()` returns quantiles on a timestamp index — and
@@ -344,6 +360,18 @@ out with honest knowledge time, evaluation joining the two — one database.
   `run_liander_benchmark.py` runs the four-model comparison above (`--models`,
   `--targets`, `--start`, `--days`); 50 more targets await in the solar, transformer,
   and feeder groups.
+- **Isolate the covariate lever**: `run_liander_benchmark.py --models
+  timesfm,timesfm-cov,timesfm-allwx` reruns the same store-served window with the *same*
+  TimesFM 2.5 checkpoint fed 0, 3, and 11 weather covariates — nothing else changes:
+
+  ![Bar chart: the same zero-shot TimesFM 2.5 checkpoint scored on the OpenSTEF liander2024 benchmark with 0, 3, and 11 weather covariates. Probabilistic error (rCRPS) falls from 0.1437 univariate to 0.0894 with 3 covariates to 0.0848 with 11 — crossing below the tuned XGBoost preset's 0.0946 as soon as covariates are added.](images/fig1_covariate_ladder.png)
+
+- **Isolate the calibration lever**: `scripts/cqr_forecaster.py` wraps the xgboost preset
+  in split-conformal calibration, fitted on a held-out window through the store's own
+  knowledge cuts — same median, tighter band:
+
+  ![Grouped bar chart: the same trained XGBoost pipeline before and after split-conformal quantile calibration, on the OpenSTEF liander2024 benchmark. Probabilistic error (rCRPS) drops 11.8% (0.0946 to 0.0834), improving on all five wind-park targets shown as dots, while median point-forecast error (rMAE at q50) is essentially unchanged (0.1107 vs 0.1126) — the calibration fixed the band, not the median.](images/fig2_calibration.png)
+
 - **Keep experiments out of production history**: declare a second forecast-log instance
   (a backtest workspace with its own retention) via `StoreConfig(extra_tables=...)` —
   see the convention's §7.2.

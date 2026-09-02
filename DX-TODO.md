@@ -246,5 +246,5 @@ owns the transaction. Items are ranked by impact; check them off as they land.
 ## Small fixes
 
 - [x] `write_forecast_run` has no return annotation (returns run_id UUID) — done alongside item 2
-- [ ] `Observed` docstring describes `StoreReader` plain-string behavior, not its own
+- [x] `Observed` docstring describes `StoreReader` plain-string behavior, not its own — fixed: it documents its own two fields; the plain-string rule stays in `StoreReader.context`
 - [x] `StoreReader.context` hardcodes `table="actuals"` for the target; add a `target_table` parameter so a multi-instance store can serve the target from a second actuals instance — done with item 12 (the callback gained `table=` and the provider `measurement_table`/`predictor_table` alongside)

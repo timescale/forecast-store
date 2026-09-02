@@ -65,10 +65,14 @@ class ForecastFeed:
 
 @dataclass(frozen=True)
 class Observed:
-    """A covariate served from a series' *measurements* (``actuals``) rather
-    than a vendor feed — e.g. a metered temperature used as a model input.
-    Plain-string bindings default to the ``predictors`` table (the common
-    case: covariates are usually external forecast feeds)."""
+    """A covariate served from a series' *measurements* rather than a vendor
+    feed — e.g. a metered temperature used as a model input. Read as-of the
+    decision moment like every other covariate (spec §9.3).
+
+    Args:
+        series: The store series whose measurements are read.
+        table: The actuals instance holding them (multi-instance stores).
+    """
 
     series: str
     table: str = "actuals"

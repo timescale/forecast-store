@@ -37,7 +37,7 @@ from openstef_models.workflows.custom_forecasting_workflow import (
 
 from dataclasses import dataclass
 
-from forecast_store.config import StoreConfig
+from forecast_store.config import ForecastLogSpec, StoreConfig
 from forecast_store.errors import DeclarationMismatch
 from forecast_store.naming import quantile_column
 from forecast_store.store import ConnectionSource, Store, _schema_for
@@ -118,6 +118,7 @@ class StoreReader:
         horizon_end: datetime,
         target_column: str = "load",
         recorded_before: datetime | None = None,
+        target_table: str = "actuals",
     ):
         """Assemble one model input frame.
 
@@ -135,6 +136,8 @@ class StoreReader:
                 target times, their knowledge is bounded by ``asof``).
             target_column: Engine's name for the target column.
             recorded_before: Optional frozen-read pin (spec §9.2).
+            target_table: The actuals instance holding the target's
+                measurements (multi-instance stores).
         """
         import pandas as pd
         from openstef_core.datasets import TimeSeriesDataset
@@ -146,7 +149,7 @@ class StoreReader:
         with Store.connect(self._source, self._config, schema=self._schema) as store:
             target = store.read_context_series(
                 target_series,
-                table="actuals",  # the target's measured history, by contract (§9.3)
+                table=target_table,  # the target's measured history, by contract (§9.3)
                 start=history_start,
                 end=asof,
                 asof=asof,  # knowledge cutoff on the target too: a historical
@@ -157,7 +160,9 @@ class StoreReader:
             columns[target_column] = target.to_pandas()
             gap_stats[target_column] = target.gaps
 
-            sources: dict[str, Any] = {target_column: target_series}
+            sources: dict[str, Any] = {
+                target_column: {"series": target_series, "table": target_table}
+            }
             for column, spec in covariates.items():
                 if isinstance(spec, ForecastFeed):
                     series_name = spec.series
@@ -226,6 +231,8 @@ class ForecastStoreCallback(ForecastingCallback):
         auto_register: Register the series on first write. Permitted because
             OpenSTEF datasets carry ``sample_interval`` explicitly (spec §8).
         model_version: Trained-artifact identity (e.g. MLflow model version).
+        table: The forecast-log instance to write (multi-instance stores);
+            the result's quantiles are validated against *its* band.
     """
 
     def __init__(
@@ -237,6 +244,7 @@ class ForecastStoreCallback(ForecastingCallback):
         schema: str | None = None,
         auto_register: bool = True,
         model_version: str | None = None,
+        table: str = "forecasts",
     ) -> None:
         self._source = source
         self._series_name = series_name
@@ -244,6 +252,7 @@ class ForecastStoreCallback(ForecastingCallback):
         self._config = store_config
         self._auto_register = auto_register
         self._model_version = model_version
+        self._table = table
         self.last_run_id = None  # set after each successful write
 
     def on_predict_end(self, context, data, result) -> None:  # noqa: ANN001
@@ -256,7 +265,7 @@ class ForecastStoreCallback(ForecastingCallback):
         # Leaving the block committed: run + points, one transaction.
 
     def _persist(self, store: Store, workflow, data, result, available_at):  # noqa: ANN001
-        col_map = self._quantile_column_map(result, store.config)
+        col_map = self._quantile_column_map(result, store.config, self._table)
         points = self._points(result, col_map)
         context_start, context_end, provenance = self._context_bounds(data, result)
 
@@ -287,6 +296,7 @@ class ForecastStoreCallback(ForecastingCallback):
         # Unregistered + auto_register=False surfaces as UnknownSeries here.
         return store.write_forecast_run(
             series=self._series_name,
+            table=self._table,
             model=self._model_name(workflow),
             model_version=self._model_version,
             run_name=workflow.run_name or str(workflow.model_id),
@@ -298,15 +308,20 @@ class ForecastStoreCallback(ForecastingCallback):
         )
 
     @staticmethod
-    def _quantile_column_map(result, config: StoreConfig) -> dict[str, str]:  # noqa: ANN001
-        """OpenSTEF column name -> store column name, validated against the band."""
+    def _quantile_column_map(
+        result, config: StoreConfig, table: str = "forecasts"  # noqa: ANN001
+    ) -> dict[str, str]:
+        """OpenSTEF column name -> store column name, validated against the table's band."""
+        spec = config.table(table)
+        if not isinstance(spec, ForecastLogSpec):
+            raise DeclarationMismatch(f"{table!r} is not a forecast log")
         col_map: dict[str, str] = {}
         for q in result.quantiles:
             level = Decimal(str(float(q)))
-            if level not in config.quantile_band:
+            if level not in spec.quantile_band:
                 raise DeclarationMismatch(
-                    f"forecast quantile {level} is not in the store's declared band "
-                    f"{[str(b) for b in config.quantile_band]}; connectors must "
+                    f"forecast quantile {level} is not in the declared band of {table!r} "
+                    f"{[str(b) for b in spec.quantile_band]}; connectors must "
                     "meet the band (spec §7.3)"
                 )
             col_map[q.format()] = quantile_column(level)

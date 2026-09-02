@@ -178,6 +178,31 @@ owns the transaction. Items are ranked by impact; check them off as they land.
   for the default case. Decisions: run_name pin [yes], typed result [yes],
   name-or-id [yes].
 
+- [x] **12. The canonical/extra table split is a `StoreConfig` artifact.** *(done before 11)*
+  Two ways to declare a forecast log (store-level `quantile_band`/`has_mean`
+  vs `ForecastLogSpec`), likewise actuals; canonical names are reserved;
+  "extra" is a second-class concept. Yet the persisted `store_tables` rows are
+  flat (no canonical marker), the DDL emits every instance identically, and
+  the split lives in three lines of `ddl._instances` plus the callback's band
+  check; every other canonical name in `src` is a `table=` default.
+
+  **Done (2026-09-02, recommendations accepted):** one flat set —
+  `StoreConfig(tables=(ForecastLogSpec(...), PredictorLogSpec(...), ActualsSpec(...)))`;
+  `StoreConfig()` declares the conventional trio; `StoreConfig.standard(band=,
+  has_mean=, actuals_revisions=, ...)` tunes it. Per-table options live on the
+  spec (incl. `value_columns`); `config.table(name)` accessor; store-level
+  fields `quantile_band`/`has_mean`/`actuals_revisions`/`value_columns` go.
+  Reserved names shrink to infrastructure (`series`, `runs`, `store_tables`,
+  `evaluation_*`). `ddl._instances` becomes one loop; `config_from_tables`
+  loses its special cases; `provision.already_provisioned` = "a store exists
+  here". Adapters gain table params: callback `table=` (band validated against
+  that table), reader `target_table=` (the small fix), provider measurement /
+  predictor table names. CLI shortcuts stay as standard-trio options.
+  Persisted rows, DDL and drift check are byte-identical → no migration.
+  ~32 test call sites, mechanical. Decisions: keep spec class names [yes];
+  `standard()` replaces `from_levels` [yes]; require ≥1 table [yes]; do
+  before 11 [yes].
+
 - [ ] **11. CLI cannot express the full config.**
   No `extra_tables`, `enforcement`, or `append_only_guard`; no config-file input;
   no way to register a series without hand-written SQL.
@@ -189,4 +214,4 @@ owns the transaction. Items are ranked by impact; check them off as they land.
 
 - [x] `write_forecast_run` has no return annotation (returns run_id UUID) — done alongside item 2
 - [ ] `Observed` docstring describes `StoreReader` plain-string behavior, not its own
-- [ ] `StoreReader.context` hardcodes `table="actuals"` for the target; add a `target_table` parameter so a multi-instance store can serve the target from a second actuals instance
+- [x] `StoreReader.context` hardcodes `table="actuals"` for the target; add a `target_table` parameter so a multi-instance store can serve the target from a second actuals instance — done with item 12 (the callback gained `table=` and the provider `measurement_table`/`predictor_table` alongside)

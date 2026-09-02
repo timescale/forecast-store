@@ -99,7 +99,7 @@ def test_store_live():
     _cleanup(psycopg)
     try:
         with Store.connect(DSN) as store:  # declaration read from the store
-            assert store.config.quantile_band == StoreConfig().quantile_band
+            assert store.config.table("forecasts") == StoreConfig().table("forecasts")
             store.register_series(SERIES, "1 hour")
             store.write_actuals(SERIES, [(T0 - H, 1.0)])
             store.write_predictors(SERIES, [(T0, 2.0)], available_at=T0 - H)
@@ -157,7 +157,7 @@ def test_provision_in_the_callers_transaction():
     psycopg = pytest.importorskip("psycopg")
     from forecast_store import ActualsSpec, provision
 
-    config = StoreConfig(extra_tables=(ActualsSpec("prov_smoke"),))
+    config = StoreConfig().with_tables(ActualsSpec("prov_smoke"))
     with psycopg.connect(DSN) as conn:
         report = provision(conn, config)
         assert report.already_provisioned  # additive onto the shared test store

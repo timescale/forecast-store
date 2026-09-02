@@ -59,7 +59,7 @@ def test_points_are_checked_field_by_field():
             [(UTC_T, {"value": 1.0, "available_at": NAIVE_T})], per_point_knowledge=True,
         )
     observed = table_configs(
-        StoreConfig(extra_tables=(ActualsSpec("obs", has_target_time_observed=True),))
+        StoreConfig().with_tables(ActualsSpec("obs", has_target_time_observed=True))
     )["obs"]
     with pytest.raises(NaiveTimestamp, match="target_time_observed"):
         _normalize(

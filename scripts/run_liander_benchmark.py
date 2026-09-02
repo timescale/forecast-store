@@ -277,9 +277,9 @@ def main() -> int:
 
         provision(  # additive: declares the deciles instance if absent
             args.dsn,
-            StoreConfig(extra_tables=(
-                ForecastLogSpec(DECILE_TABLE, quantile_band=DECILE_BAND, has_mean=False),
-            )),
+            StoreConfig().with_tables(
+                ForecastLogSpec(DECILE_TABLE, quantile_band=DECILE_BAND, has_mean=False)
+            ),
         )
 
     for model in models:

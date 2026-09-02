@@ -51,7 +51,7 @@ def test_reprovision_is_noop_and_drift_is_rejected():
     report = provision(DSN, StoreConfig())
     assert report.already_provisioned
     with pytest.raises(MigrationRequired):
-        provision(DSN, StoreConfig.from_levels(["0.1", "0.5", "0.9"]))
+        provision(DSN, StoreConfig.standard(["0.1", "0.5", "0.9"]))
 
 
 def test_resolvers(conn):
@@ -159,9 +159,8 @@ def test_config_from_store(conn):
     # Canonical switches round-trip. (Extra instances are covered in
     # test_multi_instance; a shared test store may legitimately carry some.)
     assert loaded.schema == "forecast"
-    assert loaded.quantile_band == declared.quantile_band
-    assert loaded.has_mean == declared.has_mean
-    assert loaded.actuals_revisions == declared.actuals_revisions
+    for name in ("forecasts", "predictors", "actuals"):
+        assert loaded.table(name) == declared.table(name)
     assert loaded.enforcement == declared.enforcement
     # provision() re-issues CREATE OR REPLACE VIEW (ACCESS EXCLUSIVE); end this
     # connection's read transaction first so its share locks cannot block it.

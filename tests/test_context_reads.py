@@ -177,7 +177,7 @@ def test_workflow_on_store_context_completes_audit(seeded, context_dataset):
     assert context_end == ASOF - HOUR
     assert params["covariates_asof"] == ASOF.isoformat()
     assert params["context_provenance"]["sources"] == {
-        "load": LOAD,
+        "load": {"series": LOAD, "table": "actuals"},
         "temperature": {"series": TEMP, "table": "predictors"},
     }
     assert params["context_provenance"]["gap_stats"]["load"] == 1

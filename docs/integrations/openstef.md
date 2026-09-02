@@ -123,7 +123,7 @@ in harness arguments.
   round-trip — the target rejoins from `actuals`.
 - **Workspace instance.** `TimescaleBenchmarkStorage(forecast_table="bt_workspace")`
   writes benchmark artifacts into a separate forecast-log instance (declared via
-  `StoreConfig.extra_tables`), keeping experiment churn out of production forecast
+  `StoreConfig.with_tables(...)`), keeping experiment churn out of production forecast
   history with its own retention/compression. One instance per storage object.
 - **Benchmark overwrite = label-scoped replace.** The `BenchmarkStorage` contract requires
   graceful overwrite; implemented as delete-then-insert scoped to the run label, per the

@@ -1,19 +1,30 @@
 """Store configuration: the declaration the generator works from.
 
-Per the convention (spec §4.4, §5.2), a store declares its quantile band and
-table options; every schema object is generated from that declaration and the
-declaration itself is persisted in ``store_tables`` so any client can
-reconstruct the store's shape from the store alone.
+Per the convention (spec §4.4, §5.2), a store declares its tables — each
+with its role and options — and every schema object is generated from that
+declaration; the declaration itself is persisted in ``store_tables`` so any
+client can reconstruct the store's shape from the store alone.
+
+A store is one flat set of points tables. The convention's three canonical
+names — ``forecasts``, ``predictors``, ``actuals`` — are the *default*
+declaration (:func:`standard_tables`, what ``StoreConfig()`` declares) and
+the defaults every ``table=`` argument in the SDK points at; they are not a
+separate class of table. Any table can be added, renamed, or left out: a
+store without a ``forecasts`` table is legal, and a default write into it
+fails with :class:`~forecast_store.errors.UnknownTable`. Only the
+infrastructure names (``series``, ``runs``, ``store_tables``, the
+``evaluation_*`` tables) are reserved.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import re
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Iterable, Literal
 
-from forecast_store.errors import InvalidDeclaration
+from forecast_store.errors import InvalidDeclaration, UnknownTable
 from forecast_store.naming import _as_level, quantile_column
 
 CONVENTION_VERSION = "0.4.0"
@@ -25,55 +36,73 @@ LIANDER_BAND: tuple[Decimal, ...] = tuple(
     Decimal(s) for s in ("0.05", "0.1", "0.3", "0.5", "0.7", "0.9", "0.95")
 )
 
-#: Canonical table names an extra instance may not shadow.
+#: Infrastructure tables a points table may not be named after.
 RESERVED_TABLES = frozenset(
-    {
-        "series",
-        "store_tables",
-        "runs",
-        "forecasts",
-        "predictors",
-        "actuals",
-        "evaluation_runs",
-        "evaluation_series",
-        "evaluation_metrics",
-    }
+    {"series", "store_tables", "runs", "evaluation_runs", "evaluation_series", "evaluation_metrics"}
 )
 
 
-def band_columns(
-    band: tuple[Decimal, ...], has_mean: bool
-) -> tuple[str, ...]:
+def band_columns(band: tuple[Decimal, ...], has_mean: bool) -> tuple[str, ...]:
     """Value columns for a forecast-log instance (mean first, then the band)."""
     cols = ("mean",) if has_mean else ()
     return cols + tuple(quantile_column(q) for q in band)
 
 
+def _levels(band: Iterable[float | str | Decimal]) -> tuple[Decimal, ...]:
+    """A band, canonicalized: exact Decimals, sorted, de-duplicated."""
+    try:
+        return tuple(sorted({_as_level(q) for q in band}))
+    except ValueError as exc:
+        raise InvalidDeclaration(str(exc)) from None
+
+
+def _check_name(name: str) -> None:
+    if not _IDENT_RE.match(name):
+        raise InvalidDeclaration(f"table name must be a plain lowercase identifier: {name!r}")
+    if name in RESERVED_TABLES:
+        raise InvalidDeclaration(f"table name {name!r} is reserved for the store's infrastructure")
+
+
 @dataclass(frozen=True)
 class ForecastLogSpec:
-    """An additional pattern-2 instance (spec §7.2): its own band and value
-    columns, its own retention/compression policies — sharing ``runs`` and the
-    canonical read/write machinery. ``quantile_band=None`` inherits the
-    store's band. The prototypical use: a backtest-workspace table kept apart
-    from production forecast history."""
+    """A forecast log (spec §7.2, role ``own_forecasts``): our own forecasts
+    with run provenance — value columns from its band (and ``mean``), its own
+    retention/compression policies, sharing ``runs`` with every other log.
+    ``forecasts`` is the conventional one; a backtest workspace kept apart
+    from production history is the prototypical second. Band levels may be
+    given as str/float/Decimal and are canonicalized."""
 
     name: str
-    quantile_band: tuple[Decimal, ...] | None = None
+    quantile_band: tuple[Decimal, ...] = LIANDER_BAND
     has_mean: bool = True
+
+    def __post_init__(self) -> None:
+        _check_name(self.name)
+        object.__setattr__(self, "quantile_band", _levels(self.quantile_band))
+        if not self.quantile_band and not self.has_mean:
+            raise InvalidDeclaration(
+                f"{self.name!r} must have at least one value column (band or mean)"
+            )
+
+    @property
+    def value_columns(self) -> tuple[str, ...]:
+        """``mean`` first (if declared), then the band's q-columns."""
+        return band_columns(self.quantile_band, self.has_mean)
 
 
 @dataclass(frozen=True)
 class PredictorLogSpec:
-    """An additional predictors-shaped instance (vendor feeds with their own
-    retention, or tenancy).
+    """A predictors table (spec §6.2, role ``predictors``): external forecast
+    feeds, one row per vintage. ``predictors`` is the conventional one;
+    vendor feeds with their own retention, or tenancy, are further ones.
 
-    Same *shape* as Tier-2 actuals (spec §6.2) but a different *contract*,
-    which is why it is not an :class:`ActualsSpec` under another name:
-    ``available_at`` has **no default** (a predictor row is a claim about
-    vendor publication — writers must state it; a default would silently
-    conflate publication with arrival), and the declared role is what
-    evaluation and monitoring dispatch on (scored *as* forecasts, watched for
-    publication lag — never treated as ground truth).
+    Same *shape* as Tier-2 actuals but a different *contract*, which is why
+    it is not an :class:`ActualsSpec` under another name: ``available_at``
+    has **no default** (a predictor row is a claim about vendor publication —
+    writers must state it; a default would silently conflate publication
+    with arrival), and the declared role is what evaluation and monitoring
+    dispatch on (scored *as* forecasts, watched for publication lag — never
+    treated as ground truth).
 
     A probabilistic vendor may declare a ``quantile_band`` — a band is an
     instance declaration available to either pattern; run provenance, not the
@@ -83,15 +112,29 @@ class PredictorLogSpec:
     quantile_band: tuple[Decimal, ...] = ()
     has_value: bool = True
 
+    def __post_init__(self) -> None:
+        _check_name(self.name)
+        object.__setattr__(self, "quantile_band", _levels(self.quantile_band))
+        if not self.quantile_band and not self.has_value:
+            raise InvalidDeclaration(
+                f"{self.name!r} must have at least one value column (band or value)"
+            )
+
+    @property
+    def value_columns(self) -> tuple[str, ...]:
+        """``value`` first (if declared), then the band's q-columns."""
+        cols = ("value",) if self.has_value else ()
+        return cols + tuple(quantile_column(q) for q in self.quantile_band)
+
 
 @dataclass(frozen=True)
 class ActualsSpec:
-    """An additional actuals-shaped instance.
+    """An actuals table (spec §6.1, role ``actuals``): ground truth.
+    ``actuals`` is the conventional one.
 
-    Role ``actuals`` = ground truth: evaluation scores against it and
-    missing-data alarms watch it; ``available_at`` defaults to ``now()``
-    because arrival is *measured*, not claimed (contrast
-    :class:`PredictorLogSpec`).
+    Evaluation scores against it and missing-data alarms watch it;
+    ``available_at`` defaults to ``now()`` because arrival is *measured*, not
+    claimed (contrast :class:`PredictorLogSpec`).
 
     ``revisions`` is the PK switch (spec §6.1): True keys revisions by the
     knowledge clock; False admits one belief per target (single-belief),
@@ -106,89 +149,121 @@ class ActualsSpec:
     revisions: bool = True
     has_target_time_observed: bool = False
 
+    def __post_init__(self) -> None:
+        _check_name(self.name)
+
+    @property
+    def value_columns(self) -> tuple[str, ...]:
+        return ("value",)
+
 
 TableSpec = ForecastLogSpec | PredictorLogSpec | ActualsSpec
 
 
+def standard_tables(
+    band: Iterable[float | str | Decimal] = LIANDER_BAND,
+    *,
+    has_mean: bool = True,
+    actuals_revisions: bool = True,
+) -> tuple[TableSpec, ...]:
+    """The convention's canonical trio (spec §5): ``forecasts`` with ``band``
+    (and ``mean``), ``predictors`` (one point value per vintage), and
+    ``actuals`` (revisioned by default — spec §6.1). What ``StoreConfig()``
+    declares."""
+    return (
+        ForecastLogSpec("forecasts", quantile_band=tuple(band), has_mean=has_mean),
+        PredictorLogSpec("predictors"),
+        ActualsSpec("actuals", revisions=actuals_revisions),
+    )
+
+
 @dataclass(frozen=True)
 class StoreConfig:
-    """Declared configuration of one forecast store.
+    """Declared configuration of one forecast store: its tables, plus the
+    store-level switches.
 
-    The declaration is canonicalized on construction (band sorted and
-    de-duplicated, ``extra_tables`` in name order), so two declarations of
-    the same store compare equal however they were spelled — including one
-    rebuilt from the store itself with :meth:`from_store`.
+    The declaration is canonicalized on construction (bands sorted and
+    de-duplicated, tables in name order), so two declarations of the same
+    store compare equal however they were spelled — including one rebuilt
+    from the store itself with :meth:`from_store`.
     """
 
-    quantile_band: tuple[Decimal, ...] = field(default=LIANDER_BAND)
+    tables: tuple[TableSpec, ...] = field(default_factory=standard_tables)
     schema: str = "forecast"
-    has_mean: bool = True
-    #: The canonical actuals PK switch (spec §6.1): True = revisioned,
-    #: False = single-belief.
-    actuals_revisions: bool = True
     enforcement: Literal["monitor", "fk"] = "monitor"
     #: Opt-in structural append-only enforcement on revisioned points tables
     #: (spec §8); tier-1 actuals carry their belief guard unconditionally.
     append_only_guard: bool = False
-    extra_tables: tuple[TableSpec, ...] = ()
 
     def __post_init__(self) -> None:
-        import dataclasses
-
         if not _IDENT_RE.match(self.schema):
-            raise InvalidDeclaration(f"schema must be a plain lowercase identifier, got {self.schema!r}")
-        levels = tuple(sorted({_as_level(q) for q in self.quantile_band}))
-        if not levels and not self.has_mean:
-            raise InvalidDeclaration("store must have at least one value column (band or mean)")
-        object.__setattr__(self, "quantile_band", levels)
+            raise InvalidDeclaration(
+                f"schema must be a plain lowercase identifier, got {self.schema!r}"
+            )
         if self.enforcement not in ("monitor", "fk"):
-            raise InvalidDeclaration(f"enforcement must be 'monitor' or 'fk', got {self.enforcement!r}")
-
-        seen: set[str] = set()
-        normalized: list[TableSpec] = []
-        for spec in self.extra_tables:
-            if not _IDENT_RE.match(spec.name):
-                raise InvalidDeclaration(f"table name must be a plain lowercase identifier: {spec.name!r}")
-            if spec.name in RESERVED_TABLES:
-                raise InvalidDeclaration(f"table name {spec.name!r} shadows a canonical table")
-            if spec.name in seen:
-                raise InvalidDeclaration(f"duplicate extra table name: {spec.name!r}")
-            seen.add(spec.name)
-            if isinstance(spec, ForecastLogSpec):
-                band = (
-                    levels
-                    if spec.quantile_band is None
-                    else tuple(sorted({_as_level(q) for q in spec.quantile_band}))
-                )
-                if not band and not spec.has_mean:
-                    raise InvalidDeclaration(f"{spec.name!r} must have at least one value column")
-                spec = dataclasses.replace(spec, quantile_band=band)
-            elif isinstance(spec, PredictorLogSpec):
-                band = tuple(sorted({_as_level(q) for q in spec.quantile_band}))
-                if not band and not spec.has_value:
-                    raise InvalidDeclaration(f"{spec.name!r} must have at least one value column")
-                spec = dataclasses.replace(spec, quantile_band=band)
-            normalized.append(spec)
-        normalized.sort(key=lambda spec: spec.name)  # declaration order is not significant
-        object.__setattr__(self, "extra_tables", tuple(normalized))
+            raise InvalidDeclaration(
+                f"enforcement must be 'monitor' or 'fk', got {self.enforcement!r}"
+            )
+        tables = tuple(self.tables)
+        if not tables:
+            raise InvalidDeclaration("a store declares at least one table")
+        for spec in tables:
+            if not isinstance(spec, (ForecastLogSpec, PredictorLogSpec, ActualsSpec)):
+                raise InvalidDeclaration(f"not a table spec: {spec!r}")
+        names = [spec.name for spec in tables]
+        duplicates = sorted({n for n in names if names.count(n) > 1})
+        if duplicates:
+            raise InvalidDeclaration(f"duplicate table names: {duplicates}")
+        # Declaration order is not significant.
+        object.__setattr__(self, "tables", tuple(sorted(tables, key=lambda s: s.name)))
 
     @classmethod
-    def from_levels(
-        cls, levels: Iterable[float | str | Decimal], **kwargs: object
-    ) -> "StoreConfig":
-        return cls(quantile_band=tuple(_as_level(q) for q in levels), **kwargs)  # type: ignore[arg-type]
+    def standard(
+        cls,
+        band: Iterable[float | str | Decimal] = LIANDER_BAND,
+        *,
+        has_mean: bool = True,
+        actuals_revisions: bool = True,
+        **store: Any,
+    ) -> StoreConfig:
+        """The canonical trio, tuned — e.g.
+        ``StoreConfig.standard(["0.1", "0.5", "0.9"], actuals_revisions=False, schema="fs_prod")``.
+        Remaining keywords are the store-level switches."""
+        return cls(
+            tables=standard_tables(band, has_mean=has_mean, actuals_revisions=actuals_revisions),
+            **store,
+        )
+
+    def with_tables(self, *specs: TableSpec) -> StoreConfig:
+        """A copy that also declares ``specs`` — instances arrive as additions
+        (spec §7.2): ``StoreConfig().with_tables(ForecastLogSpec("bt_workspace", ...))``."""
+        return dataclasses.replace(self, tables=self.tables + tuple(specs))
+
+    def table(self, name: str) -> TableSpec:
+        """The declared spec for ``name``; :class:`UnknownTable` otherwise."""
+        for spec in self.tables:
+            if spec.name == name:
+                return spec
+        raise UnknownTable(
+            f"{name!r} is not a table declared by this StoreConfig "
+            f"(tables: {list(self.table_names)})"
+        )
+
+    @property
+    def table_names(self) -> tuple[str, ...]:
+        return tuple(spec.name for spec in self.tables)
 
     @classmethod
-    def from_store(cls, conn: Any, schema: str = "forecast") -> "StoreConfig":
+    def from_store(cls, conn: Any, schema: str = "forecast") -> StoreConfig:
         """Rebuild a provisioned store's declaration from the store alone.
 
         Reads the per-table declarations ``provision`` persisted in
-        ``store_tables`` (spec §5.2) and inverts them — band, mean column,
-        actuals PK switch, enforcement mode, every extra instance — and
-        recovers ``append_only_guard`` from the catalog (its guard function
-        exists iff it was declared). The result compares equal to the
-        declaration the store was built from and re-provisions as a no-op,
-        so clients never have to redeclare (and drift from) a store's shape.
+        ``store_tables`` (spec §5.2) and inverts them — every table, with its
+        band, columns, PK switch and enforcement mode — and recovers
+        ``append_only_guard`` from the catalog (its guard function exists iff
+        it was declared). The result compares equal to the declaration the
+        store was built from and re-provisions as a no-op, so clients never
+        have to redeclare (and drift from) a store's shape.
 
         Raises :class:`~forecast_store.provision.NotProvisioned` when no
         store exists at ``schema``.
@@ -212,14 +287,3 @@ class StoreConfig:
         return config_from_tables(
             declarations, schema=schema, append_only_guard=append_only_guard
         )
-
-    @property
-    def quantile_columns(self) -> tuple[str, ...]:
-        """Generated q-column names, band order."""
-        return tuple(quantile_column(q) for q in self.quantile_band)
-
-    @property
-    def value_columns(self) -> tuple[str, ...]:
-        """All value columns of the forecasts table (mean first, then the band)."""
-        cols = ("mean",) if self.has_mean else ()
-        return cols + self.quantile_columns

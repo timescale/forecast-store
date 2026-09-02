@@ -26,12 +26,14 @@ class ProvisionReport:
     already_provisioned: bool
 
 
-def _stored_config(cur, schema: str, table: str):
-    # Existence check first: referencing a missing relation is a parse-time
-    # error, so we cannot query store_tables until we know it exists.
+def _store_exists(cur, schema: str) -> bool:
+    # Referencing a missing relation is a parse-time error, so store_tables
+    # cannot be queried until it is known to exist.
     cur.execute("SELECT to_regclass(%s)", (f"{schema}.store_tables",))
-    if cur.fetchone()[0] is None:
-        return None
+    return cur.fetchone()[0] is not None
+
+
+def _stored_config(cur, schema: str, table: str):
     cur.execute(
         f"SELECT config FROM {schema}.store_tables WHERE table_name = %s", (table,)
     )
@@ -74,9 +76,9 @@ def _provision(conn: Any, config: StoreConfig, timescale: bool | None) -> Provis
             cur.execute("SELECT 1 FROM pg_extension WHERE extname = 'timescaledb'")
             timescale = cur.fetchone() is not None
 
-        already = _stored_config(cur, config.schema, "forecasts")
+        already = _store_exists(cur, config.schema)  # a store, whatever its tables
         for table, requested in table_configs(config).items():
-            stored = _stored_config(cur, config.schema, table)
+            stored = _stored_config(cur, config.schema, table) if already else None
             if stored is not None and stored != requested:
                 raise MigrationRequired(
                     f"table '{config.schema}.{table}' is provisioned with a "
@@ -97,5 +99,5 @@ def _provision(conn: Any, config: StoreConfig, timescale: bool | None) -> Provis
         schema=config.schema,
         statements_executed=len(statements),
         timescaledb=bool(timescale),
-        already_provisioned=already is not None,
+        already_provisioned=already,
     )

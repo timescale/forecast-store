@@ -20,7 +20,7 @@ DSN = os.environ.get("FORECAST_STORE_TEST_DSN")
 T0 = datetime(2024, 9, 1, tzinfo=timezone.utc)
 H = timedelta(hours=1)
 VENDOR = PredictorLogSpec("vendor_smoke", quantile_band=("0.5",))  # value + q50
-DECL = table_configs(StoreConfig(extra_tables=(VENDOR,)))
+DECL = table_configs(StoreConfig().with_tables(VENDOR))
 
 
 def test_scalar_is_sugar_for_the_single_value_column():
@@ -94,7 +94,7 @@ def test_point_shape_live():
     from forecast_store.series import register_series
     from forecast_store.write import write_actuals, write_forecast_run, write_predictors
 
-    config = StoreConfig(extra_tables=(VENDOR,))
+    config = StoreConfig().with_tables(VENDOR)
     provision(DSN, config)
     name = "shape_smoke_series"
     with psycopg.connect(DSN) as conn:

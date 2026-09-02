@@ -21,6 +21,7 @@ from forecast_store.config import (
     PredictorLogSpec,
     StoreConfig,
     TableSpec,
+    standard_tables,
 )
 from forecast_store.ddl import generate_ddl, hypertable_ddl, table_configs
 from forecast_store.errors import (
@@ -59,6 +60,7 @@ __all__ = [
     "PredictorLogSpec",
     "ActualsSpec",
     "TableSpec",
+    "standard_tables",
     # schema generation and provisioning
     "generate_ddl",
     "hypertable_ddl",

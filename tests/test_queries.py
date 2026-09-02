@@ -23,7 +23,7 @@ DSN = os.environ.get("FORECAST_STORE_TEST_DSN")
 T0 = datetime(2024, 12, 1, tzinfo=timezone.utc)
 H = timedelta(hours=1)
 WS = ForecastLogSpec("asof_ws", quantile_band=("0.5",), has_mean=False)
-CFG = StoreConfig(extra_tables=(WS,))
+CFG = StoreConfig().with_tables(WS)
 NAME = "asof_smoke_series"
 KEYS = ("series_id", "target_time", "available_at", "run_id")
 
@@ -34,7 +34,7 @@ def test_default_shape_is_unchanged():
     assert "JOIN" not in sql and "recorded_at" not in sql
     assert "f.series_id = forecast.get_series_id(%s)" in sql
     assert params == ("s", T0, T0 + H, T0)
-    assert forecast_asof_columns(CFG) == KEYS + CFG.value_columns
+    assert forecast_asof_columns(CFG) == KEYS + CFG.table("forecasts").value_columns
 
 
 def test_table_resolves_from_the_declaration():

@@ -63,8 +63,8 @@ def test_refusals_are_typed():
         StoreConfig(schema="Not-An-Identifier")
     with pytest.raises(InvalidDeclaration, match="conflicts"):
         Store(object(), StoreConfig(schema="fs_a"), schema="fs_b")
-    with pytest.raises(InvalidDeclaration, match="canonical"):
-        config_from_tables({"actuals": {"role": "actuals"}})
+    with pytest.raises(InvalidDeclaration, match="no points tables"):
+        config_from_tables({"evaluation_runs": {"role": "evaluation"}})
 
     decl = table_configs(StoreConfig())
     t = datetime(2024, 1, 1, tzinfo=timezone.utc)

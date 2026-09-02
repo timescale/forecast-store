@@ -1,4 +1,5 @@
-"""Multi-instance stores: extra tables declared via StoreConfig.extra_tables.
+"""Multi-instance stores: tables beyond the conventional trio, declared with
+StoreConfig.with_tables (or any flat ``tables=`` set).
 
 Unit tests cover generation; the live test provisions a workspace forecast log
 *additively* onto the existing store (instances arrive as additions, spec
@@ -28,7 +29,7 @@ EXTRAS = (
 
 
 def test_extra_instances_generate_everything():
-    config = StoreConfig(extra_tables=EXTRAS)
+    config = StoreConfig().with_tables(*EXTRAS)
     ddl = "\n".join(generate_ddl(config))
     # Workspace forecast log: own band columns, index, serving view.
     assert "CREATE TABLE IF NOT EXISTS forecast.bt_workspace" in ddl
@@ -62,8 +63,8 @@ def test_extra_instances_generate_everything():
 
 def test_banded_predictor_instance():
     """A probabilistic vendor feed: band on a predictors-shaped instance."""
-    config = StoreConfig(
-        extra_tables=(PredictorLogSpec("vendor_prob", quantile_band=("0.1", "0.5", "0.9")),)
+    config = StoreConfig().with_tables(
+        PredictorLogSpec("vendor_prob", quantile_band=("0.1", "0.5", "0.9"))
     )
     declaration = table_configs(config)["vendor_prob"]
     assert declaration["value_columns"] == ["value", "q10", "q50", "q90"]
@@ -75,19 +76,22 @@ def test_banded_predictor_instance():
         assert f"{col} " in block
     assert "run_id" not in block  # a banded predictor is still not a forecast log
     with pytest.raises(ValueError, match="at least one value column"):
-        StoreConfig(extra_tables=(PredictorLogSpec("empty", has_value=False),))
+        PredictorLogSpec("empty", has_value=False)
 
 
-def test_extra_instance_validation():
-    with pytest.raises(ValueError, match="shadows a canonical table"):
-        StoreConfig(extra_tables=(ForecastLogSpec("forecasts"),))
+def test_instance_validation():
+    with pytest.raises(ValueError, match="reserved"):
+        ActualsSpec("runs")  # infrastructure names are the only reserved ones
     with pytest.raises(ValueError, match="duplicate"):
-        StoreConfig(extra_tables=(PredictorLogSpec("x"), PredictorLogSpec("x")))
+        StoreConfig().with_tables(PredictorLogSpec("x"), PredictorLogSpec("x"))
     with pytest.raises(ValueError, match="identifier"):
-        StoreConfig(extra_tables=(PredictorLogSpec("Bad-Name"),))
-    # band=None inherits the store band
-    config = StoreConfig(extra_tables=(ForecastLogSpec("wide"),))
-    assert table_configs(config)["wide"]["value_columns"] == list(config.value_columns)
+        PredictorLogSpec("Bad-Name")
+    # A forecast log's default band is the reference band — the same as `forecasts`.
+    config = StoreConfig().with_tables(ForecastLogSpec("wide"))
+    assert (
+        table_configs(config)["wide"]["value_columns"]
+        == list(config.table("forecasts").value_columns)
+    )
 
 
 def test_config_round_trips_through_store_tables():
@@ -96,30 +100,31 @@ def test_config_round_trips_through_store_tables():
     switch, every extra instance — so clients need not redeclare it."""
     from forecast_store.ddl import config_from_tables
 
-    config = StoreConfig.from_levels(
+    config = StoreConfig.standard(
         ["0.1", "0.5", "0.9"],
-        schema="fs_rt",
         has_mean=False,
         actuals_revisions=False,
+        schema="fs_rt",
         enforcement="fk",
         append_only_guard=True,
-        extra_tables=(
-            PredictorLogSpec("vendor_x", quantile_band=("0.25", "0.75"), has_value=False),
-            ForecastLogSpec("bt_workspace"),  # inherits the store band
-            ActualsSpec("sensor_a", has_target_time_observed=True),
-            ActualsSpec("meter_sb", revisions=False),
-        ),
+    ).with_tables(
+        PredictorLogSpec("vendor_x", quantile_band=("0.25", "0.75"), has_value=False),
+        ForecastLogSpec("bt_workspace", quantile_band=["0.1", "0.5", "0.9"]),
+        ActualsSpec("sensor_a", has_target_time_observed=True),
+        ActualsSpec("meter_sb", revisions=False),
     )
     rebuilt = config_from_tables(table_configs(config), schema="fs_rt", append_only_guard=True)
     assert rebuilt == config
     assert table_configs(rebuilt) == table_configs(config)
-    # Extras are canonicalized to name order: declaration order never breaks equality.
-    assert [s.name for s in config.extra_tables] == [
-        "bt_workspace", "meter_sb", "sensor_a", "vendor_x",
-    ]
+    # Tables are canonicalized to name order: declaration order never breaks equality.
+    assert config.table_names == (
+        "actuals", "bt_workspace", "forecasts", "meter_sb", "predictors", "sensor_a", "vendor_x",
+    )
 
-    with pytest.raises(ValueError, match="canonical"):
-        config_from_tables({"actuals": {"role": "actuals"}})
+    # No table is implied: a single-table store rebuilds as exactly that.
+    assert config_from_tables({"actuals": {"role": "actuals"}}) == StoreConfig(
+        tables=(ActualsSpec("actuals"),)
+    )
     with pytest.raises(ValueError, match="unknown role"):
         config_from_tables({**table_configs(StoreConfig()), "odd": {"role": "mystery"}})
 
@@ -135,8 +140,8 @@ def test_workspace_instance_live():
     from forecast_store.series import register_series
     from forecast_store.write import write_forecast_run
 
-    config = StoreConfig(
-        extra_tables=(ForecastLogSpec("bt_workspace", quantile_band=("0.1", "0.5", "0.9")),)
+    config = StoreConfig().with_tables(
+        ForecastLogSpec("bt_workspace", quantile_band=("0.1", "0.5", "0.9"))
     )
     report = provision(DSN, config)  # additive onto the already-provisioned store
     assert report.already_provisioned
@@ -146,7 +151,8 @@ def test_workspace_instance_live():
     with psycopg.connect(DSN) as conn:
         try:
             # The instance — band and all — is recoverable from the store alone.
-            assert config.extra_tables[0] in StoreConfig.from_store(conn).extra_tables
+            loaded = StoreConfig.from_store(conn)
+            assert loaded.table("bt_workspace") == config.table("bt_workspace")
             sid = register_series(conn, config, "mi_smoke", timedelta(hours=1))
             write_forecast_run(
                 conn,
@@ -200,9 +206,7 @@ def test_workspace_instance_live():
 
 def test_observed_actuals_instance():
     """spec §6.1: optional nullable target_time_observed on an actuals instance."""
-    config = StoreConfig(
-        extra_tables=(ActualsSpec("sensor_a", has_target_time_observed=True),)
-    )
+    config = StoreConfig().with_tables(ActualsSpec("sensor_a", has_target_time_observed=True))
     ddl = "\n".join(generate_ddl(config))
     block = ddl.split("sensor_a (")[1].split("PRIMARY KEY")[0]
     assert "target_time_observed timestamptz," in block  # nullable, never defaulted
@@ -229,9 +233,7 @@ def test_observed_instance_and_grid_validation_live():
     from forecast_store.series import register_series
     from forecast_store.write import MisalignedTimestamp, write_actuals
 
-    config = StoreConfig(
-        extra_tables=(ActualsSpec("obs_smoke", has_target_time_observed=True),)
-    )
+    config = StoreConfig().with_tables(ActualsSpec("obs_smoke", has_target_time_observed=True))
     provision(DSN, config)  # additive; the catalog-driven sweep needs no regeneration
 
     t0 = datetime(2024, 9, 1, tzinfo=timezone.utc)
@@ -308,7 +310,7 @@ def test_single_belief_instance_live():
     from forecast_store.series import register_series
     from forecast_store.write import ConflictingBelief, write_actuals
 
-    config = StoreConfig(extra_tables=(ActualsSpec("sb_smoke", revisions=False),))
+    config = StoreConfig().with_tables(ActualsSpec("sb_smoke", revisions=False))
     provision(DSN, config)
 
     t0 = datetime(2024, 9, 1, tzinfo=timezone.utc)

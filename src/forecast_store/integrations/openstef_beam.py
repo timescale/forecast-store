@@ -83,6 +83,12 @@ class TimescaleTargetProvider(TargetProvider[BenchmarkTarget, None]):
         description="target.name -> {engine column -> predictor series name} (the rename map)",
     )
     metric_providers: list[MetricProvider] = Field(default_factory=list)
+    measurement_table: str = Field(
+        default="actuals", description="Actuals instance holding the targets' measurements."
+    )
+    predictor_table: str = Field(
+        default="predictors", description="Predictors instance holding the covariate feeds."
+    )
     store_config: StoreConfig | None = Field(
         default=None,
         description="The store's declaration; omitted = read from the store's own "
@@ -135,14 +141,16 @@ class TimescaleTargetProvider(TargetProvider[BenchmarkTarget, None]):
                 self.measurement_series[target.name],
                 target,
                 self.target_column,
-                table="actuals",
+                table=self.measurement_table,
             )
 
     def get_predictors_for_target(self, target: BenchmarkTarget) -> VersionedTimeSeriesDataset:
         bindings = self.predictor_series.get(target.name, {})
         with self._store() as store:
             datasets = [
-                self._read_versioned(store, series_name, target, column, table="predictors")
+                self._read_versioned(
+                    store, series_name, target, column, table=self.predictor_table
+                )
                 for column, series_name in bindings.items()
             ]
         return VersionedTimeSeriesDataset.concat(datasets=datasets, mode="outer")

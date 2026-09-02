@@ -3,7 +3,7 @@ from decimal import Decimal
 
 import pytest
 
-from forecast_store.config import CONVENTION_VERSION, LIANDER_BAND, StoreConfig
+from forecast_store.config import CONVENTION_VERSION, LIANDER_BAND, ForecastLogSpec, StoreConfig
 from forecast_store.ddl import generate_ddl, hypertable_ddl, table_configs
 from forecast_store.queries import forecast_asof
 
@@ -23,14 +23,14 @@ def stmt_for(statements, fragment):
 
 
 def test_liander_band_is_default(config):
-    assert config.quantile_band == LIANDER_BAND
-    assert config.quantile_columns == LIANDER_COLUMNS
-    assert config.value_columns == ("mean",) + LIANDER_COLUMNS
+    forecasts = config.table("forecasts")
+    assert forecasts.quantile_band == LIANDER_BAND
+    assert forecasts.value_columns == ("mean",) + LIANDER_COLUMNS
 
 
 def test_band_is_sorted_and_deduplicated():
-    c = StoreConfig.from_levels(["0.9", "0.1", 0.9, "0.5"])
-    assert c.quantile_band == (Decimal("0.1"), Decimal("0.5"), Decimal("0.9"))
+    c = StoreConfig.standard(["0.9", "0.1", 0.9, "0.5"])
+    assert c.table("forecasts").quantile_band == (Decimal("0.1"), Decimal("0.5"), Decimal("0.9"))
 
 
 def test_forecasts_table_has_band_columns(config):
@@ -91,7 +91,7 @@ def test_table_configs_cover_all_seeded_tables(config):
 
 def test_single_belief_actuals_pk():
     """Revisions are the PK switch (spec §6.1): identical columns, different key."""
-    statements = generate_ddl(StoreConfig(actuals_revisions=False))
+    statements = generate_ddl(StoreConfig.standard(actuals_revisions=False))
     actuals = stmt_for(statements, "CREATE TABLE IF NOT EXISTS forecast.actuals")
     assert "available_at timestamptz NOT NULL DEFAULT now()" in actuals  # universal knowledge clock
     assert "PRIMARY KEY (series_id, target_time)" in actuals  # single belief per target
@@ -152,7 +152,8 @@ def test_columnstore_orderby_uniform():
     # available_at is the knowledge clock on both shapes; one orderby everywhere.
     for revisions in (False, True):
         actuals = [
-            s for s in hypertable_ddl(StoreConfig(actuals_revisions=revisions)) if ".actuals SET" in s
+            s for s in hypertable_ddl(StoreConfig.standard(actuals_revisions=revisions))
+            if ".actuals SET" in s
         ]
         assert "timescaledb.orderby = 'target_time DESC, available_at DESC'" in actuals[0]
 
@@ -181,9 +182,11 @@ def test_invalid_configs_rejected():
     with pytest.raises(ValueError):
         StoreConfig(schema="Bad-Schema")
     with pytest.raises(ValueError):
-        StoreConfig(quantile_band=(), has_mean=False)
+        ForecastLogSpec("forecasts", quantile_band=(), has_mean=False)
     with pytest.raises(ValueError):
-        StoreConfig.from_levels(["1.5"])
+        StoreConfig.standard(["1.5"])
+    with pytest.raises(ValueError):
+        StoreConfig(tables=())
 
 
 def test_sweep_function_generated(config):
@@ -219,9 +222,9 @@ def test_catalog_points_split(config):
     from forecast_store.config import ActualsSpec
 
     variants = [
-        StoreConfig.from_levels(["0.1", "0.5", "0.9"]),
-        StoreConfig(actuals_revisions=False),
-        StoreConfig(extra_tables=(ActualsSpec("tenant_b", revisions=False),)),
+        StoreConfig.standard(["0.1", "0.5", "0.9"]),
+        StoreConfig.standard(actuals_revisions=False),
+        StoreConfig().with_tables(ActualsSpec("tenant_b", revisions=False)),
     ]
     for variant in variants:
         assert catalog_ddl(variant) == catalog

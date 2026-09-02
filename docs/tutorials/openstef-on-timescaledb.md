@@ -373,7 +373,7 @@ out with honest knowledge time, evaluation joining the two — one database.
   ![Grouped bar chart: the same trained XGBoost pipeline before and after split-conformal quantile calibration, on the OpenSTEF liander2024 benchmark. Probabilistic error (rCRPS) drops 11.8% (0.0946 to 0.0834), improving on all five wind-park targets shown as dots, while median point-forecast error (rMAE at q50) is essentially unchanged (0.1107 vs 0.1126) — the calibration fixed the band, not the median.](images/fig2_calibration.png)
 
 - **Keep experiments out of production history**: declare a second forecast-log instance
-  (a backtest workspace with its own retention) via `StoreConfig(extra_tables=...)` —
+  (a backtest workspace with its own retention) via `StoreConfig().with_tables(...)` —
   see the convention's §7.2.
 - **The convention itself** — three clocks, the actuals/predictors split, quantile
   representation, the evaluation join: [forecast-store-convention.md](../forecast-store-convention.md).

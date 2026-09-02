@@ -159,5 +159,5 @@ def test_band_mismatch_rejected(store_conn, prediction):
         sample_interval=timedelta(hours=1),
         forecast_start=datetime(2025, 1, 1, tzinfo=timezone.utc),
     )
-    with pytest.raises(ValueError, match="not in the store's declared band"):
+    with pytest.raises(ValueError, match="not in the declared band of 'forecasts'"):
         ForecastStoreCallback._quantile_column_map(off_band, StoreConfig())

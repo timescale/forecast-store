@@ -291,7 +291,7 @@ single-belief writes are skip-or-raise via the generated `belief_guard` trigger
 (`ConflictingBelief`, never a silent swallow — live-verified inert under all TimescaleDB
 internals); revisioned idempotency is retcon-refusal by doctrine. Tier numbers retired the
 same day: declarations carry `revisions: bool` (`ActualsSpec(revisions=)`,
-`StoreConfig(actuals_revisions=)`), prose says single-belief / revisioned. Convention
+`StoreConfig.standard(actuals_revisions=)`), prose says single-belief / revisioned. Convention
 0.4.0.
 
 **Continuous aggregates (open) — the fullest open item.** None are generated yet; there
@@ -322,7 +322,7 @@ directly over revision-bearing or forecast tables (aggregation across vintages i
 meaningless before vintage selection; late writes churn materialized ranges), and any
 pinned surface.
 
-**Multi-instance roles (closed) — shipped.** `StoreConfig.extra_tables` declares
+**Multi-instance roles (closed) — shipped.** `StoreConfig.with_tables(...)` declares
 additional instances (`ForecastLogSpec` with its own band, `PredictorLogSpec`,
 `ActualsSpec` with its own PK shape); the generator emits each extra table identically to
 a canonical one (DDL, as-of index, serving view, `store_tables` declaration, columnstore)

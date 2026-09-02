@@ -30,11 +30,11 @@ from forecast_store.config import (
 
 
 def _instances(config: StoreConfig) -> list[dict]:
-    """The store's points-table instances — canonical three plus extras.
+    """The store's points-table instances, one per declared table.
 
     Single source for CREATE TABLE emission, store_tables declarations, and
-    hypertable/columnstore statements, so an extra instance is identical to a
-    canonical one everywhere by construction.
+    hypertable/columnstore statements, so every instance is built the same
+    way — the conventional trio and any other table alike.
     """
 
     def forecast_instance(name: str, band, has_mean: bool) -> dict:
@@ -82,17 +82,13 @@ def _instances(config: StoreConfig) -> list[dict]:
             "orderby": "target_time DESC, available_at DESC",
         }
 
-    instances = [
-        forecast_instance("forecasts", config.quantile_band, config.has_mean),
-        predictor_instance("predictors", (), has_value=True),
-        actuals_instance("actuals", config.actuals_revisions),
-    ]
-    for spec in config.extra_tables:
+    instances = []
+    for spec in config.tables:
         if isinstance(spec, ForecastLogSpec):
             instances.append(forecast_instance(spec.name, spec.quantile_band, spec.has_mean))
         elif isinstance(spec, PredictorLogSpec):
             instances.append(predictor_instance(spec.name, spec.quantile_band, spec.has_value))
-        elif isinstance(spec, ActualsSpec):
+        else:
             instances.append(
                 actuals_instance(spec.name, spec.revisions, spec.has_target_time_observed)
             )
@@ -434,40 +430,36 @@ def config_from_tables(
 ) -> StoreConfig:
     """Inverse of :func:`table_configs`: the declaration behind stored rows.
 
-    ``declarations`` is ``store_tables`` as ``{table_name: config}``. The
-    canonical ``forecasts`` and ``actuals`` rows supply the store-level
-    switches; every non-canonical points row becomes an extra instance by
-    its declared role. ``schema`` and ``append_only_guard`` are not persisted
-    per table and are passed in (:meth:`StoreConfig.from_store` recovers the
-    guard from the catalog).
+    ``declarations`` is ``store_tables`` as ``{table_name: config}``. Every
+    points row becomes a table spec by its declared role; infrastructure and
+    evaluation rows are skipped. ``schema`` and ``append_only_guard`` are not
+    persisted per table and are passed in (:meth:`StoreConfig.from_store`
+    recovers the guard from the catalog).
     """
-    try:
-        forecasts, actuals = declarations["forecasts"], declarations["actuals"]
-    except KeyError as exc:
-        raise InvalidDeclaration(f"store_tables lacks the canonical {exc} declaration") from None
 
     def band(declaration: Mapping[str, object]) -> tuple[Decimal, ...]:
         levels = declaration.get("quantile_band", ())
         return tuple(Decimal(str(q)) for q in levels)  # type: ignore[union-attr]
 
-    extras: list[ForecastLogSpec | PredictorLogSpec | ActualsSpec] = []
+    tables: list[ForecastLogSpec | PredictorLogSpec | ActualsSpec] = []
+    enforcement = "monitor"
     for name in sorted(declarations):
-        if name in RESERVED_TABLES:
-            continue
         d = declarations[name]
         role = d.get("role")
+        if name in RESERVED_TABLES or role == "evaluation":
+            continue
         if role == "own_forecasts":
-            extras.append(
+            tables.append(
                 ForecastLogSpec(name, quantile_band=band(d), has_mean=bool(d["has_mean"]))
             )
         elif role == "predictors":
-            extras.append(
+            tables.append(
                 PredictorLogSpec(
                     name, quantile_band=band(d), has_value=bool(d.get("has_value", True))
                 )
             )
         elif role == "actuals":
-            extras.append(
+            tables.append(
                 ActualsSpec(
                     name,
                     revisions=bool(d.get("revisions", True)),
@@ -476,15 +468,17 @@ def config_from_tables(
             )
         else:
             raise InvalidDeclaration(f"store_tables declares {name!r} with unknown role {role!r}")
+        enforcement = d.get("enforcement", enforcement)  # type: ignore[assignment]
+    if not tables:
+        raise InvalidDeclaration(
+            "store_tables declares no points tables — nothing to rebuild a declaration from"
+        )
 
     return StoreConfig(
-        quantile_band=band(forecasts),
+        tables=tuple(tables),
         schema=schema,
-        has_mean=bool(forecasts["has_mean"]),
-        actuals_revisions=bool(actuals.get("revisions", True)),
-        enforcement=forecasts.get("enforcement", "monitor"),  # type: ignore[arg-type]
+        enforcement=enforcement,  # type: ignore[arg-type]
         append_only_guard=append_only_guard,
-        extra_tables=tuple(extras),
     )
 
 

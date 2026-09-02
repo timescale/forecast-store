@@ -15,7 +15,7 @@ import argparse
 import os
 import sys
 
-from forecast_store.config import StoreConfig
+from forecast_store.config import LIANDER_BAND, StoreConfig
 from forecast_store.ddl import (
     catalog_ddl,
     catalog_hypertable_ddl,
@@ -27,14 +27,13 @@ from forecast_store.ddl import (
 
 
 def _config_from_args(args: argparse.Namespace) -> StoreConfig:
-    kwargs: dict = {
-        "schema": args.schema,
-        "has_mean": not args.no_mean,
-        "actuals_revisions": not args.single_belief_actuals,
-    }
-    if args.band:
-        return StoreConfig.from_levels(args.band.split(","), **kwargs)
-    return StoreConfig(**kwargs)
+    """The canonical trio, tuned by the flags (spec §5)."""
+    return StoreConfig.standard(
+        args.band.split(",") if args.band else LIANDER_BAND,
+        has_mean=not args.no_mean,
+        actuals_revisions=not args.single_belief_actuals,
+        schema=args.schema,
+    )
 
 
 def _add_config_args(p: argparse.ArgumentParser) -> None:

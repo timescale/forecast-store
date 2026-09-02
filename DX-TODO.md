@@ -219,7 +219,7 @@ owns the transaction. Items are ranked by impact; check them off as they land.
 - [ ] **11. CLI cannot express the full config.**
   No `extra_tables`, `enforcement`, or `append_only_guard`; no config-file input;
   no way to register a series without hand-written SQL.
-  - Add `--config path.toml` (or YAML) to `ddl` and `provision`
+  - [x] `--config FILE` (YAML) on `ddl` and `provision`; `StoreConfig.from_dict`/`to_dict`; `forecast_store.declaration` `load`/`loads`/`dumps`; PyYAML is a core dependency; `--config` excludes the trio flags, `--schema` overrides the file
   - Add `register-series` subcommand
   - Add `describe` subcommand that loads the stored declaration (pairs with item 4) and reports drift
 

@@ -676,6 +676,7 @@ version = "0.0.1.dev0"
 source = { editable = "." }
 dependencies = [
     { name = "psycopg" },
+    { name = "pyyaml" },
 ]
 
 [package.optional-dependencies]
@@ -684,7 +685,6 @@ dev = [
 ]
 foundation = [
     { name = "openstef-foundation-models", extra = ["cpu"] },
-    { name = "pyyaml" },
 ]
 moirai = [
     { name = "uni2ts" },
@@ -706,7 +706,7 @@ requires-dist = [
     { name = "openstef-models", extras = ["xgb-cpu"], marker = "extra == 'openstef'", specifier = ">=4.3" },
     { name = "psycopg", specifier = ">=3.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
-    { name = "pyyaml", marker = "extra == 'foundation'" },
+    { name = "pyyaml", specifier = ">=6" },
     { name = "timesfm", extras = ["torch"], marker = "extra == 'timesfm'", specifier = ">=2.0" },
     { name = "uni2ts", marker = "extra == 'moirai'", git = "https://github.com/chandragupta/uni2ts?rev=feature%2Fpython-3.13-build" },
 ]

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import dataclasses
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Iterable, Literal
@@ -159,6 +160,58 @@ class ActualsSpec:
 
 TableSpec = ForecastLogSpec | PredictorLogSpec | ActualsSpec
 
+#: The persisted role vocabulary (``store_tables.config->>'role'``) -> spec class.
+ROLES: dict[str, type] = {
+    "forecasts": ForecastLogSpec,
+    "predictors": PredictorLogSpec,
+    "actuals": ActualsSpec,
+}
+
+
+def role_of(spec: TableSpec) -> str:
+    """The persisted role name of a table spec."""
+    for role, cls in ROLES.items():
+        if isinstance(spec, cls):
+            return role
+    raise InvalidDeclaration(f"not a table spec: {spec!r}")
+
+
+def _spec_from_dict(entry: Any) -> TableSpec:
+    if not isinstance(entry, Mapping):
+        raise InvalidDeclaration(
+            f"a table declaration is a mapping, got {type(entry).__name__}"
+        )
+    fields = dict(entry)
+    name = fields.pop("name", None)
+    if not isinstance(name, str):
+        raise InvalidDeclaration(
+            f"table name must be a string, got {name!r} — in YAML, quote names "
+            "such as on/yes/no, which parse as booleans"
+        )
+    role = fields.pop("role", None)
+    if role not in ROLES:
+        raise InvalidDeclaration(
+            f"table {name!r}: role must be one of {sorted(ROLES)}, got {role!r}"
+        )
+    cls = ROLES[role]
+    allowed = {f.name for f in dataclasses.fields(cls)} - {"name"}
+    unknown = set(fields) - allowed
+    if unknown:
+        raise InvalidDeclaration(
+            f"table {name!r} ({role}): unknown keys {sorted(unknown)}; allowed: {sorted(allowed)}"
+        )
+    return cls(name, **fields)
+
+
+def _spec_to_dict(spec: TableSpec) -> dict[str, Any]:
+    out: dict[str, Any] = {"name": spec.name, "role": role_of(spec)}
+    for f in dataclasses.fields(spec):
+        if f.name == "name":
+            continue
+        value = getattr(spec, f.name)
+        out[f.name] = [str(q) for q in value] if f.name == "quantile_band" else value
+    return out
+
 
 def standard_tables(
     band: Iterable[float | str | Decimal] = LIANDER_BAND,
@@ -252,6 +305,40 @@ class StoreConfig:
     @property
     def table_names(self) -> tuple[str, ...]:
         return tuple(spec.name for spec in self.tables)
+
+    @classmethod
+    def from_dict(cls, declaration: Mapping[str, Any]) -> StoreConfig:
+        """A declaration from plain data — the shape :meth:`to_dict` produces
+        and a YAML file holds (:mod:`forecast_store.declaration`).
+
+        Keys: ``tables`` (required), a list of mappings with ``name``, ``role``
+        (``forecasts`` | ``predictors`` | ``actuals`` — the persisted
+        vocabulary) and that role's options; plus the optional store-level
+        ``schema``, ``enforcement`` and ``append_only_guard``. Band levels may
+        be numbers or strings; they are canonicalized to exact decimals.
+        """
+        if not isinstance(declaration, Mapping):
+            raise InvalidDeclaration(
+                f"a declaration is a mapping, got {type(declaration).__name__}"
+            )
+        data = dict(declaration)
+        tables = data.pop("tables", None)
+        if not isinstance(tables, (list, tuple)):
+            raise InvalidDeclaration("a declaration needs a 'tables' list")
+        unknown = set(data) - {"schema", "enforcement", "append_only_guard"}
+        if unknown:
+            raise InvalidDeclaration(f"unknown declaration keys: {sorted(unknown)}")
+        return cls(tables=tuple(_spec_from_dict(t) for t in tables), **data)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Plain data for :meth:`from_dict` — what a declaration file holds.
+        Bands are written as strings, i.e. exactly."""
+        return {
+            "schema": self.schema,
+            "enforcement": self.enforcement,
+            "append_only_guard": self.append_only_guard,
+            "tables": [_spec_to_dict(spec) for spec in self.tables],
+        }
 
     @classmethod
     def from_store(cls, conn: Any, schema: str = "forecast") -> StoreConfig:

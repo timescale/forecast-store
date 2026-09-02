@@ -14,9 +14,10 @@ generator can't express what you need, fix the generator first, then re-provisio
 
 ```bash
 # print the DDL (review before applying; default = liander 7-level band, revisioned actuals)
-uv run forecast-store ddl [--band 0.05,0.1,0.3,0.5,0.7,0.9,0.95] [--schema forecast] [--tier 2]
+uv run forecast-store ddl [--band 0.05,0.1,0.3,0.5,0.7,0.9,0.95] [--no-mean] [--single-belief-actuals] [--schema forecast]
+uv run forecast-store ddl --config store.yaml      # any set of tables (YAML declaration; see forecast_store.declaration)
 
-# apply (auto-detects TimescaleDB; degrades to plain Postgres)
+# apply (auto-detects TimescaleDB; degrades to plain Postgres); --config works here too
 uv run forecast-store provision --dsn "$FORECAST_STORE_DSN"
 ```
 

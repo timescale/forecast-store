@@ -48,6 +48,7 @@ Two ideas carry the whole design:
 pip install forecast-store        # v0 in preparation; see status below
 forecast-store ddl                # print the generated schema
 forecast-store provision --dsn postgres://...
+forecast-store provision --dsn postgres://... --config store.yaml   # any set of tables, from a YAML declaration
 ```
 
 Write a forecast with honest knowledge time, then read it back as-of any

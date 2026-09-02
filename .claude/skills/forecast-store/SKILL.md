@@ -19,6 +19,12 @@ uv run forecast-store ddl --config store.yaml      # any set of tables (YAML dec
 
 # apply (auto-detects TimescaleDB; degrades to plain Postgres); --config works here too
 uv run forecast-store provision --dsn "$FORECAST_STORE_DSN"
+
+# register a series (get-or-create; prints the id)
+uv run forecast-store register-series site42/load --interval "15 minutes" --dsn "$FORECAST_STORE_DSN"
+
+# the store's declaration as YAML (edit, then provision --config); with --config: drift check, exit 1 on drift
+uv run forecast-store describe --dsn "$FORECAST_STORE_DSN" [--config store.yaml]
 ```
 
 Re-provisioning with the same declaration is a verified no-op. A *different* declaration

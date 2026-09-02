@@ -216,14 +216,14 @@ owns the transaction. Items are ranked by impact; check them off as they land.
     `UPDATE forecast.store_tables SET config = jsonb_set(config, '{role}', '"forecasts"') WHERE config->>'role' = 'own_forecasts';`
     then re-provision to regenerate the sweep
 
-- [ ] **11. CLI cannot express the full config.**
+- [x] **11. CLI cannot express the full config.**
   No `extra_tables`, `enforcement`, or `append_only_guard`; no config-file input;
   no way to register a series without hand-written SQL.
   - [x] `--config FILE` (YAML) on `ddl` and `provision`; `StoreConfig.from_dict`/`to_dict`; `forecast_store.declaration` `load`/`loads`/`dumps`; PyYAML is a core dependency; `--config` excludes the trio flags, `--schema` overrides the file
-  - Add `register-series` subcommand
-  - Add `describe` subcommand that loads the stored declaration (pairs with item 4) and reports drift
+  - [x] `register-series NAME --interval ... [--timezone --unit --description --metadata JSON]` (get-or-create; prints the id)
+  - [x] `describe --dsn` prints the store's declaration as re-provisionable YAML (header: convention version, engine, series count); `describe --config FILE` is a drift check (differs / missing / unmanaged + store-level switches), exit 1 on drift; the comparison is `provision.compare_declarations`, shared with `provision` itself (which now lists every differing table)
 
-  **Plan (2026-09-02, awaiting go) — YAML only:** the file is the flat model —
+  **Done (2026-09-02) — YAML only:** the file is the flat model —
   store-level `schema`/`enforcement`/`append_only_guard` plus a `tables` list
   with `name`, `role` (persisted vocabulary: `own_forecasts` | `predictors` |
   `actuals`) and the role's options; levels as floats or strings (canonicalized
@@ -241,8 +241,7 @@ owns the transaction. Items are ranked by impact; check them off as they land.
   table: differs / missing from store / not in file; store switches), exit 1
   on drift, sharing one comparison helper with `provision`. Two commits: file
   format + `--config`; then the two subcommands.
-  Open: PyYAML as a core dependency [recommended] vs lazily imported under a
-  `cli` extra.
+  Decided: PyYAML is a core dependency.
 
 ## Small fixes
 

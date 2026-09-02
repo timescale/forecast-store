@@ -8,6 +8,7 @@ migration (spec §7.3), never a side effect of provisioning.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -15,7 +16,15 @@ from forecast_store.config import StoreConfig
 from forecast_store.ddl import generate_ddl, hypertable_ddl, table_configs
 from forecast_store.errors import MigrationRequired, NotProvisioned
 
-__all__ = ["MigrationRequired", "NotProvisioned", "ProvisionReport", "provision"]
+__all__ = [
+    "Drift",
+    "MigrationRequired",
+    "NotProvisioned",
+    "ProvisionReport",
+    "compare_declarations",
+    "provision",
+    "stored_declarations",
+]
 
 
 @dataclass(frozen=True)
@@ -33,12 +42,55 @@ def _store_exists(cur, schema: str) -> bool:
     return cur.fetchone()[0] is not None
 
 
-def _stored_config(cur, schema: str, table: str):
-    cur.execute(
-        f"SELECT config FROM {schema}.store_tables WHERE table_name = %s", (table,)
+def _stored_rows(cur, schema: str) -> dict[str, Mapping[str, Any]]:
+    cur.execute(f"SELECT table_name, config FROM {schema}.store_tables")
+    return dict(cur.fetchall())
+
+
+def stored_declarations(conn: Any, schema: str = "forecast") -> dict[str, Mapping[str, Any]]:
+    """The store's persisted per-table declarations, ``{table_name: config}``
+    (spec §5.2). Raises :class:`NotProvisioned` when no store exists at ``schema``."""
+    with conn.cursor() as cur:
+        if not _store_exists(cur, schema):
+            raise NotProvisioned(
+                f"no forecast store at schema {schema!r} ({schema}.store_tables does not exist)"
+            )
+        return _stored_rows(cur, schema)
+
+
+@dataclass(frozen=True)
+class Drift:
+    """How a requested declaration relates to a store's persisted rows, table
+    by table (spec §7.3). ``differs`` blocks provisioning — changing a
+    provisioned table is a migration. ``missing`` tables are what provisioning
+    would add. ``unmanaged`` tables are in the store but not in the request
+    and are left untouched (instances arrive as additions). The object is
+    truthy when the store is not exactly what the request declares —
+    ``differs`` or ``missing``; ``unmanaged`` alone is not drift."""
+
+    #: table -> (stored, requested)
+    differs: Mapping[str, tuple[Mapping[str, Any], Mapping[str, Any]]]
+    missing: tuple[str, ...]
+    unmanaged: tuple[str, ...]
+
+    def __bool__(self) -> bool:
+        return bool(self.differs or self.missing)
+
+
+def compare_declarations(
+    stored: Mapping[str, Mapping[str, Any]], requested: StoreConfig
+) -> Drift:
+    """Compare a store's persisted rows (:func:`stored_declarations`) with a
+    declaration — the one comparison ``provision`` refuses on and
+    ``forecast-store describe --config`` reports."""
+    wanted = table_configs(requested)
+    return Drift(
+        differs={
+            t: (stored[t], wanted[t]) for t in wanted if t in stored and stored[t] != wanted[t]
+        },
+        missing=tuple(t for t in wanted if t not in stored),
+        unmanaged=tuple(t for t in stored if t not in wanted),
     )
-    row = cur.fetchone()
-    return row[0] if row else None
 
 
 def provision(
@@ -77,17 +129,19 @@ def _provision(conn: Any, config: StoreConfig, timescale: bool | None) -> Provis
             timescale = cur.fetchone() is not None
 
         already = _store_exists(cur, config.schema)  # a store, whatever its tables
-        for table, requested in table_configs(config).items():
-            stored = _stored_config(cur, config.schema, table) if already else None
-            if stored is not None and stored != requested:
-                raise MigrationRequired(
-                    f"table '{config.schema}.{table}' is provisioned with a "
-                    f"different declaration.\n  stored:    {stored}\n"
-                    f"  requested: {requested}\n"
-                    "Changing a provisioned table (e.g. its band) is a migration; "
-                    "v0 does not apply migrations. (Stored tables absent from this "
-                    "config are left untouched: instances arrive as additions.)"
-                )
+        drift = compare_declarations(_stored_rows(cur, config.schema) if already else {}, config)
+        if drift.differs:
+            detail = "".join(
+                f"  {config.schema}.{table}\n    stored:    {stored}\n    requested: {requested}\n"
+                for table, (stored, requested) in drift.differs.items()
+            )
+            raise MigrationRequired(
+                f"{len(drift.differs)} table(s) are provisioned with a different declaration:\n"
+                f"{detail}"
+                "Changing a provisioned table (e.g. its band) is a migration; "
+                "v0 does not apply migrations. (Stored tables absent from this "
+                "config are left untouched: instances arrive as additions.)"
+            )
 
         statements = generate_ddl(config)
         if timescale:

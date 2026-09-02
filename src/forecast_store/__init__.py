@@ -38,7 +38,13 @@ from forecast_store.errors import (
     UnknownTable,
 )
 from forecast_store.naming import parse_quantile_column, quantile_column
-from forecast_store.provision import ProvisionReport, provision
+from forecast_store.provision import (
+    Drift,
+    ProvisionReport,
+    compare_declarations,
+    provision,
+    stored_declarations,
+)
 from forecast_store.queries import ForecastsAsOf, forecast_asof, forecast_asof_columns
 from forecast_store.read import (
     ContextSeries,
@@ -69,6 +75,9 @@ __all__ = [
     "table_configs",
     "provision",
     "ProvisionReport",
+    "stored_declarations",
+    "compare_declarations",
+    "Drift",
     # the facade
     "Store",
     "ConnectionSource",

@@ -49,6 +49,9 @@ pip install forecast-store        # v0 in preparation; see status below
 forecast-store ddl                # print the generated schema
 forecast-store provision --dsn postgres://...
 forecast-store provision --dsn postgres://... --config store.yaml   # any set of tables, from a YAML declaration
+forecast-store register-series site42/load --interval "15 minutes" --dsn postgres://...
+forecast-store describe --dsn postgres://...                        # the store's declaration, as a YAML file
+forecast-store describe --dsn postgres://... --config store.yaml    # drift check: exit 1 if the store differs
 ```
 
 Write a forecast with honest knowledge time, then read it back as-of any

@@ -130,6 +130,8 @@ def write_forecast(
     run_name: str | None = None,
     context_start: datetime | None = None,
     context_end: datetime | None = None,
+    started_at: datetime | None = None,
+    finished_at: datetime | None = None,
     params: Mapping[str, Any] | None = None,
 ) -> UUID:
     """Write one forecast — a run row plus its points, one knowledge time; returns the run_id.
@@ -146,7 +148,10 @@ def write_forecast(
     from psycopg.types.json import Jsonb
 
     aware(available_at, "available_at")
-    for name, stamp in (("context_start", context_start), ("context_end", context_end)):
+    for name, stamp in (
+        ("context_start", context_start), ("context_end", context_end),
+        ("started_at", started_at), ("finished_at", finished_at),
+    ):
         if stamp is not None:
             aware(stamp, name)
 
@@ -162,8 +167,9 @@ def write_forecast(
 
         cur.execute(
             f"INSERT INTO {s}.runs "
-            "(run_name, model, model_version, available_at, context_start, context_end, params) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING run_id",
+            "(run_name, model, model_version, available_at, context_start, context_end, "
+            "started_at, finished_at, params) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING run_id",
             (
                 run_name,
                 model,
@@ -171,6 +177,8 @@ def write_forecast(
                 available_at,
                 context_start,
                 context_end,
+                started_at,
+                finished_at,
                 Jsonb(dict(params)) if params is not None else None,
             ),
         )

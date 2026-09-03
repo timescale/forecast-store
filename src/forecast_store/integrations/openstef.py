@@ -258,17 +258,26 @@ class ForecastStoreCallback(ForecastingCallback):
         self._model_version = model_version
         self._table = table
         self.last_run_id = None  # set after each successful write
+        self._predict_started_at: datetime | None = None
+
+    def on_predict_start(self, context, data) -> None:  # noqa: ANN001
+        # Compute-bounds provenance (spec: runs.started_at/finished_at) —
+        # a producer-measured claim, recorded only when actually measured.
+        self._predict_started_at = datetime.now(timezone.utc)
 
     def on_predict_end(self, context, data, result) -> None:  # noqa: ANN001
         available_at = datetime.now(timezone.utc)  # real knowledge time
+        started_at, self._predict_started_at = self._predict_started_at, None
         workflow: CustomForecastingWorkflow = context.workflow
 
         with Store.connect(self._source, self._config, schema=self._schema) as store:
-            self.last_run_id = self._persist(store, workflow, data, result, available_at)
+            self.last_run_id = self._persist(
+                store, workflow, data, result, available_at, started_at
+            )
             self._config = store.config  # keep the resolved declaration for later calls
         # Leaving the block committed: run + points, one transaction.
 
-    def _persist(self, store: Store, workflow, data, result, available_at):  # noqa: ANN001
+    def _persist(self, store: Store, workflow, data, result, available_at, started_at=None):  # noqa: ANN001
         col_map = self._quantile_column_map(result, store.config, self._table)
         points = self._points(result, col_map)
         context_start, context_end, provenance = self._context_bounds(data, result)
@@ -307,6 +316,9 @@ class ForecastStoreCallback(ForecastingCallback):
             available_at=available_at,
             context_start=context_start,
             context_end=context_end,
+            # In live operation the knowledge time is the compute finish.
+            started_at=started_at,
+            finished_at=available_at if started_at is not None else None,
             params=params,
             points=points,
         )

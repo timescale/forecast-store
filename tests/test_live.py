@@ -222,3 +222,46 @@ def test_python_resolvers_and_series_refs(conn):
     with pytest.raises(TypeError, match="registered name"):
         write_forecast(conn, config, series=1.5, available_at=SIM_AVAILABLE, **common)
     conn.rollback()
+
+
+@pytest.mark.skipif(not DSN, reason="FORECAST_STORE_TEST_DSN not set")
+def test_run_compute_bounds(conn):
+    """runs.started_at/finished_at: producer-measured claims round-trip; NULL
+    when unmeasured (never defaulted); inverted bounds refused in schema."""
+    import psycopg
+
+    from forecast_store.config import StoreConfig
+    from forecast_store.series import register_series
+    from forecast_store.write import write_forecast
+
+    config = StoreConfig()
+    register_series(conn, config, "smoke_test", timedelta(minutes=15))
+    target = T0 + timedelta(days=3)
+    started = SIM_AVAILABLE - timedelta(seconds=42)
+    common = dict(
+        series="smoke_test", model="constant", run_name="smoke",
+        points=[(target, {"q50": 1.0})],
+    )
+
+    timed = write_forecast(
+        conn, config, available_at=SIM_AVAILABLE,
+        started_at=started, finished_at=SIM_AVAILABLE, **common,
+    )
+    untimed = write_forecast(conn, config, available_at=SIM_AVAILABLE, **common)
+    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT run_id, started_at, finished_at FROM forecast.runs "
+            "WHERE run_id IN (%s, %s)", (timed, untimed),
+        )
+        rows = dict((r[0], r[1:]) for r in cur.fetchall())
+    assert rows[timed] == (started, SIM_AVAILABLE)
+    assert rows[untimed] == (None, None)  # unmeasured stays NULL — no default
+
+    # finished before started: the CHECK refuses it at the schema layer.
+    with pytest.raises(psycopg.errors.CheckViolation):
+        write_forecast(
+            conn, config, available_at=SIM_AVAILABLE,
+            started_at=SIM_AVAILABLE, finished_at=started, **common,
+        )
+    conn.rollback()

@@ -169,6 +169,8 @@ class Store:
         run_name: str | None = None,
         context_start: datetime | None = None,
         context_end: datetime | None = None,
+        started_at: datetime | None = None,
+        finished_at: datetime | None = None,
         params: Mapping[str, Any] | None = None,
     ) -> UUID:
         """One forecast (a run + its points); see :func:`forecast_store.write.write_forecast`."""
@@ -176,7 +178,8 @@ class Store:
             self.conn, self.config,
             series=series, model=model, points=points, available_at=available_at,
             table=table, model_version=model_version, run_name=run_name,
-            context_start=context_start, context_end=context_end, params=params,
+            context_start=context_start, context_end=context_end,
+            started_at=started_at, finished_at=finished_at, params=params,
         )
 
     def write_actuals(

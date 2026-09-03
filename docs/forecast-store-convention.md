@@ -429,13 +429,27 @@ CREATE TABLE forecast.runs (
     recorded_at   timestamptz NOT NULL DEFAULT now(),  -- system clock (never written)
     context_start timestamptz,
     context_end   timestamptz,
-    params        jsonb                   -- resolved as-used config + gap-fill provenance
+    started_at    timestamptz,            -- compute bounds: producer-measured claims
+    finished_at   timestamptz,            -- (never defaulted; NULL = not measured)
+    params        jsonb,                  -- resolved as-used config + gap-fill provenance
+    CHECK (finished_at >= started_at)
 );
 ```
 
 - `context_start`/`context_end` record the input window actually queried, making leakage
   auditable in one line: any run where `context_end > available_at` is provably
   contaminated.
+- `started_at`/`finished_at` bound the computation that produced this run's forecasts, as
+  measured by the producer. Measurement provenance, not a fourth clock: no query role, never
+  in a key, and never defaulted — a default `now()` would silently record *write* time as
+  *compute* time. Training amortized across runs is excluded (a training event is a different
+  entity). `finished_at − started_at` is inference latency; `recorded_at − finished_at` is the
+  producer's own delivery lag — the same monitored quantity §6.2 defines for vendors, turned
+  on ourselves. `finished_at` is not `available_at`: they coincide only under
+  publish-on-compute live operation (where one clock read may honestly serve both). They
+  diverge under gated release and post-compute pipelines (`available_at > finished_at` —
+  the gap a measurable release delay), and in backtests/backfills, where `available_at` is
+  simulated but `finished_at`, if stated, is real wall-clock.
 - `params` is the **as-used snapshot**: the fully resolved configuration (registry values
   merged with the caller's engine config), plus gap-fill statistics from context assembly.
 - `run_name` is a caller-supplied grouping label — job name, benchmark run, or model id —

@@ -194,6 +194,44 @@ Caveats: TimesFM/Moirai rows are decile-band rCRPS (narrower basis);
 not addressed. Variant smoke tests live under scratch labels `smoke_*` /
 `smoke2_*` (1 park × 2 days; ignore).
 
+## Runtimes (measured, same machine)
+
+Wall clocks from the runner logs (process start → exit, includes model load,
+evaluation, and DB writes), one MacBook (Apple Silicon, CPU-only), 6,120
+forecasts of a 288-step horizon per run. Confound alert: Chronos-2 runs via
+ONNX Runtime at batch 16, TimesFM via PyTorch at batch 1, presets train
+in-process with 4 workers — this measures each model *as integrated here*,
+not architecture-intrinsic speed.
+
+| run | wall clock | ≈ s/forecast |
+|---|---|---|
+| timesfm3 (univariate) | 1h 28m | 0.9 |
+| timesfm3-cov (3) | 2h 04m | 1.2 |
+| timesfm3-allwx (11) | 4h 09m | 2.4 |
+| timesfm-cov (2.5, 3 via XReg) | 2h 08m | 1.3 |
+| timesfm-allwx (2.5, 11 via XReg) | 2h 05m | 1.2 |
+| chronos2-base-allwx (11) | 7h 02m | 4.1 |
+| moirai (3) | ~7.5h | ~4.4 |
+| moirai-allwx (11) | 44h 38m | ~26 |
+
+Notable: TimesFM 3.0 with all 11 covariates is ~1.7× faster than Chronos-2
+here despite 330M vs ~120M params; its covariate cost scales gently
+(0.9 → 2.4 s from 0 → 11) where Moirai's explodes (~4 → ~26 s); and 2.5's
+XReg covariates are nearly free (they never enter the transformer).
+
+Runtimes are also *approximately* reconstructable from the store —
+`min(runs.recorded_at) → max(evaluation_runs.recorded_at)` per label — but
+points are buffered and written per park, so that span misses park 1's
+backtest and model load (runs ~20% short). Durable design (implemented
+2026-09-03): `runs.started_at`/`runs.finished_at` — real columns, producer-
+measured claims, never defaulted, `CHECK (finished_at >= started_at)`.
+`finished_at − started_at` is inference latency; `recorded_at − finished_at`
+is the producer's own delivery lag. `ForecastStoreCallback` fills them in
+live operation (`on_predict_start` → `on_predict_end`); the sweep wall clock
+is a derived aggregate. Remaining gap: the *backtest* pipeline doesn't pass
+forecaster timing to the storage adapter, so benchmark rows stay NULL —
+timings above are from runner logs.
+
 ## External validation (researched 2026-09-01)
 
 Are these results an outlier, or the classical baseline misconfigured?

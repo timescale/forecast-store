@@ -74,7 +74,10 @@ CREATE TABLE IF NOT EXISTS forecast.runs (
     recorded_at   timestamptz NOT NULL DEFAULT now(),
     context_start timestamptz,
     context_end   timestamptz,
-    params        jsonb
+    started_at    timestamptz,  -- compute bounds: producer-measured claims,
+    finished_at   timestamptz,  -- never defaulted (a default would fabricate)
+    params        jsonb,
+    CHECK (finished_at >= started_at)
 );
 
 CREATE TABLE IF NOT EXISTS forecast.evaluation_runs (

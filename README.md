@@ -77,7 +77,9 @@ with Store.connect(DSN) as store:            # a DSN or a pool; declaration read
 `Store` is sugar over the module functions — `write_forecast(conn, config, ...)` and
 friends take a connection and a declaration you manage, and never commit. Bind a connection
 you already hold (or a pool checkout) with `Store(conn, config)`; `StoreConfig.from_store(conn)`
-reads the declaration a store was provisioned with.
+reads the declaration a store was provisioned with. The [Python guide](docs/python-guide.md)
+walks the whole lifecycle and states the rules — knowledge time per table role, aware
+timestamps, the block as the unit of work.
 
 ```sql
 -- The workhorse query: the latest belief per target, as of a knowledge cutoff.
@@ -175,6 +177,8 @@ planned runs — is [`docs/benchmark_log.md`](docs/benchmark_log.md).
 
 ## Documentation
 
+- **Python guide** — connect, declare, register, write, read, operate; every example is run by
+  the test suite: [`docs/python-guide.md`](docs/python-guide.md)
 - **The convention** — the spec this package generates:
   [`docs/forecast-store-convention.md`](docs/forecast-store-convention.md)
 - **Design rationale** — alternatives considered and worked examples, per rule:

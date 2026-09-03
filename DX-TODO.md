@@ -243,6 +243,27 @@ owns the transaction. Items are ranked by impact; check them off as they land.
   format + `--config`; then the two subcommands.
   Decided: PyYAML is a core dependency.
 
+- [x] **14. Python usage is documented only by the README quickstart.**
+  The rules a user must know — knowledge time per role, aware timestamps,
+  the block as the unit of work, name-or-id, `recorded_before` — live only in
+  docstrings; the session's 13 API changes had to be audited against the docs
+  by hand.
+
+  **Done (2026-09-03):** `docs/python-guide.md`, ordered by the
+  store's lifecycle — connect (`Store.connect` DSN/pool, `Store(conn)`, the
+  block as unit of work, config from the store); declare & provision
+  (`StoreConfig()`, `standard`, `with_tables`, YAML, `provision` on DSN/conn,
+  `MigrationRequired`); register series (name-or-id); write (one point shape,
+  scalar sugar, knowledge time per role, aware timestamps, grid,
+  `ConflictingBelief`); read (`asof`/`recorded_before`/`run_name`,
+  `ContextSeries.to_pandas`/`.gaps`, versioned export, `forecast_asof` pins);
+  operate (`describe`/drift, `from_store`, errors, CLI); OpenSTEF pointers.
+  README quickstart links to it. **Executable:** a test extracts the guide's
+  Python blocks and runs them in order against the test DB in a throwaway
+  schema (marker to skip blocks needing an extra), so API changes fail the
+  build instead of drifting the docs. Not yet: a generated API reference site
+  (mkdocs + mkdocstrings when the PyPI release is prepared).
+
 ## Small fixes
 
 - [x] `write_forecast_run` has no return annotation (returns run_id UUID) — done alongside item 2

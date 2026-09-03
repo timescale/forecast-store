@@ -311,3 +311,130 @@ class MoiraiBacktestForecaster(BacktestForecasterMixin):
             data=pd.DataFrame(frame, index=index),
             sample_interval=SAMPLE_INTERVAL,
         )
+
+
+def load_timesfm3(batch_size: int = 1):
+    """Load TimesFM 3.0 (330M) once; shared per process.
+
+    Natively multivariate: known-future covariates go in as
+    ``past_future_covariates`` — attended by the model, not a linear
+    side-channel like 2.5's XReg. Weights are under the TimesFM
+    Non-Commercial License v1.0 (benchmark/evaluation use only, never
+    production).
+    """
+    from timesfm3 import ModelConfig, TimesFM3Evaluator
+
+    return TimesFM3Evaluator(ModelConfig(per_core_batch_size=batch_size, device="cpu"))
+
+
+class TimesFM3BacktestForecaster(BacktestForecasterMixin):
+    """Zero-shot TimesFM 3.0 under OpenSTEF's backtest/benchmark pipeline.
+
+    Same decile head as 2.5 (9 levels, median at index 4) -> the same
+    store-band subset {0.1, 0.3, 0.5, 0.7, 0.9} and the same
+    forecast-through-the-gap handling. ``covariates`` names known-future
+    columns fed natively; empty means univariate.
+    """
+
+    _LEVELS = (0.1, 0.3, 0.5, 0.7, 0.9)
+    _Q_INDEX = {0.1: 0, 0.3: 2, 0.5: 4, 0.7: 6, 0.9: 8}  # into the 9-level head
+
+    def __init__(
+        self,
+        evaluator,  # noqa: ANN001
+        target_column: str = "load",
+        covariates: tuple[str, ...] = (),
+    ) -> None:
+        self._evaluator = evaluator
+        self._target = target_column
+        self._covariates = covariates
+        self._quantiles = [Q(level) for level in self._LEVELS]
+        self.config = BacktestForecasterConfig(
+            requires_training=False,  # zero-shot
+            predict_length=SAMPLE_INTERVAL * HORIZON_STEPS,
+            predict_min_length=SAMPLE_INTERVAL,
+            predict_context_length=SAMPLE_INTERVAL * CONTEXT_STEPS,
+            predict_context_min_coverage=0.3,
+            training_context_length=timedelta(0),
+            training_context_min_coverage=0.0,
+            predict_sample_interval=SAMPLE_INTERVAL,
+        )
+
+    @property
+    @override
+    def quantiles(self) -> list[Quantile]:
+        return self._quantiles
+
+    @override
+    def fit(self, data: RestrictedHorizonVersionedTimeSeries) -> None:
+        return None  # zero-shot
+
+    @override
+    def predict(self, data: RestrictedHorizonVersionedTimeSeries) -> TimeSeriesDataset | None:
+        window = data.get_window(
+            start=data.horizon - self.config.predict_context_length,
+            end=data.horizon,
+            available_before=data.horizon,
+        )
+        if self._target not in window.data.columns:
+            return None
+        grid = pd.date_range(
+            end=data.horizon - SAMPLE_INTERVAL, periods=CONTEXT_STEPS, freq=SAMPLE_INTERVAL
+        )
+        history = window.data[self._target].reindex(grid).astype(np.float32)
+        last_valid = history.last_valid_index()
+        if last_valid is None:
+            return None
+        gap_steps = int((data.horizon - last_valid) / SAMPLE_INTERVAL) - 1
+        decode_steps = gap_steps + HORIZON_STEPS
+        if decode_steps > MAX_DECODE_STEPS:
+            return None  # context too stale to reach the horizon honestly
+
+        context = history.loc[:last_valid].ffill().dropna()
+        if len(context) < 96:
+            return None
+
+        past_future = None
+        if self._covariates:
+            future = data.get_window(
+                start=data.horizon,
+                end=data.horizon + SAMPLE_INTERVAL * HORIZON_STEPS,
+                available_before=data.horizon,
+            )
+            cov_grid = pd.date_range(
+                start=context.index[0],
+                periods=len(context) + decode_steps,
+                freq=SAMPLE_INTERVAL,
+            )
+            both = pd.concat([window.data, future.data]).sort_index()
+            both = both[~both.index.duplicated(keep="last")]
+            cov = np.stack([
+                both[col].reindex(cov_grid).ffill().bfill().fillna(0.0)
+                .to_numpy(np.float32)
+                if col in both.columns else np.zeros(len(cov_grid), np.float32)
+                for col in self._covariates
+            ])
+            past_future = [cov]
+
+        out = next(iter(self._evaluator.predict_batch(
+            contexts=[context.to_numpy()],
+            horizon=decode_steps,
+            past_future_covariates=past_future,
+            return_quantiles=True,
+            make_positive=False,  # the liander convention: production is negative
+        )))
+        q_out = np.asarray(out.quantiles)  # (decode_steps, 9)
+        tail = slice(gap_steps, gap_steps + HORIZON_STEPS)
+        index = pd.DatetimeIndex(
+            pd.date_range(data.horizon, periods=HORIZON_STEPS, freq=SAMPLE_INTERVAL),
+            name="datetime",
+        )
+        frame = {
+            q.format(): q_out[tail, self._Q_INDEX[float(q)]]
+            for q in self._quantiles
+        }
+        frame[self._target] = q_out[tail, self._Q_INDEX[0.5]]
+        return TimeSeriesDataset(
+            data=pd.DataFrame(frame, index=index),
+            sample_interval=SAMPLE_INTERVAL,
+        )

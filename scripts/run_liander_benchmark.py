@@ -65,6 +65,11 @@ MODELS = (
     # Band-calibration variant: the preset + openstef's split-conformal
     # quantile calibrator fitted on a held-out window (see cqr_forecaster.py).
     "xgboost-cqr",
+    # TimesFM 3.0 (330M, natively multivariate; non-commercial license —
+    # benchmark use only): the native-covariate ladder next to 2.5's XReg one.
+    "timesfm3",
+    "timesfm3-cov",
+    "timesfm3-allwx",
 )
 CHRONOS_BATCH_SIZE = 16  # the official example's batched-inference setting
 
@@ -74,7 +79,11 @@ CHRONOS_BATCH_SIZE = 16  # the official example's batched-inference setting
 DECILE_TABLE = "forecasts_deciles"
 DECILE_BAND = ("0.1", "0.3", "0.5", "0.7", "0.9")
 DECILE_MODELS = frozenset(
-    {"timesfm", "timesfm-cov", "timesfm-allwx", "moirai", "moirai-allwx"}
+    {
+        "timesfm", "timesfm-cov", "timesfm-allwx",
+        "timesfm3", "timesfm3-cov", "timesfm3-allwx",
+        "moirai", "moirai-allwx",
+    }
 )
 
 
@@ -113,6 +122,24 @@ def build_forecaster_factory(model: str, cache_dir: Path, quantiles, horizons):
             )
 
         # A live ONNX session cannot be shared across worker processes.
+        return factory, 1
+
+    if model.startswith("timesfm3"):
+        # Zero-shot TimesFM 3.0; decile band like 2.5, but covariates are
+        # NATIVE (past_future_covariates), not an XReg side-channel. Must be
+        # matched before the timesfm-2.5 prefix below.
+        from tsfm_forecasters import TimesFM3BacktestForecaster, load_timesfm3
+
+        covariates = {
+            "timesfm3": (),
+            "timesfm3-cov": CHRONOS_FEATURES,
+            "timesfm3-allwx": WEATHER_COLUMNS,
+        }[model]
+        shared = load_timesfm3()
+
+        def factory(_context, _target):  # noqa: ANN001
+            return TimesFM3BacktestForecaster(shared, covariates=covariates)
+
         return factory, 1
 
     if model.startswith("timesfm"):

@@ -21,7 +21,7 @@ foundation = [
 ]
 # TSFM benchmark baselines (heavy; benchmark harness only, not store code)
 timesfm = [
-    "timesfm[torch]>=2.0",
+    "timesfm[torch]>=3.0",
 ]
 moirai = [
     # uni2ts main pins numpy~=1.26 / torch<2.5 (incompatible with openstef-core);

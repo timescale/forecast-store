@@ -2784,16 +2784,16 @@ wheels = [
 
 [[package]]
 name = "timesfm"
-version = "2.0.2"
+version = "3.0.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "huggingface-hub" },
     { name = "numpy" },
     { name = "safetensors" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/48/16/503864c985a1f213ae6182ece73b6538c468b5cd5c21158ede9db3333732/timesfm-2.0.2.tar.gz", hash = "sha256:b03885d3467b09314a4b461e1f6729375844061dd31fd41e3c35aa503c333da3", size = 44127, upload-time = "2026-07-02T18:55:31.815Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e8/f2/13e517db75b88bd559c6134b78999b263e6238673a314a1afffa58a0aa03/timesfm-3.0.1.tar.gz", hash = "sha256:e7f0740dd90522edba487be9bf53cfde48e514c52c0e9618abdfdf66db309a3d", size = 77475, upload-time = "2026-09-02T01:48:45.814Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ce/f2/3a7ed286070526a0e48487fdfd3b7ca25f90dd0205fd87f4bb27e15ad4fb/timesfm-2.0.2-py3-none-any.whl", hash = "sha256:c7bde94beb1651e1251cdf1e9d09cf6f015e0218d038a4a836a170dc70b08071", size = 44770, upload-time = "2026-07-02T18:55:30.83Z" },
+    { url = "https://files.pythonhosted.org/packages/d9/90/871a507b5419bd54703e5f8cbd4683898d589635e6e374549e3c2e96a5ff/timesfm-3.0.1-py3-none-any.whl", hash = "sha256:7f6d047992321b5e8cfef29c462a17fe0dca07a6de7ca6166fc4197119083453", size = 87992, upload-time = "2026-09-02T01:48:44.615Z" },
 ]
 
 [package.optional-dependencies]

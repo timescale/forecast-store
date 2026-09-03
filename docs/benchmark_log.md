@@ -82,6 +82,14 @@ Dronten, Opmeer, Leeuwarden, Arnhem.
 | TimesFM 2.5 + XReg, all-wx | `liander_timesfm-allwx` | all 11 wx via XReg | deciles | 0.0848 | 0.1116 | 2026-08-27 |
 | Moirai 2.0, all-wx variant | `liander_moirai-allwx` | all 11 wx | deciles | 0.1416 | 0.1868 | 2026-08-29 |
 | XGBoost + conformal calibration | `liander_xgboost-cqr` | all 11 wx + engineered | 7-level | 0.0834 | 0.1126 | 2026-08-31 |
+| TimesFM 3.0 (zero-shot)† | `liander_timesfm3` | none (univariate) | deciles | 0.1301 | 0.1793 | 2026-09-02 |
+| TimesFM 3.0 (zero-shot)† | `liander_timesfm3-cov` | 3 wx, native | deciles | 0.0708 | 0.0954 | 2026-09-03 |
+| TimesFM 3.0 (zero-shot)† | `liander_timesfm3-allwx` | all 11 wx, native | deciles | **0.0657** | **0.0892** | 2026-09-03 |
+
+† TimesFM 3.0 (330M, `google/timesfm-3.0-pytorch`) weights are under the
+TimesFM Non-Commercial License v1.0 — benchmark/evaluation use only, never
+production. Chronos-2 remains the best production-licensed model in the
+table.
 
 ### Per-park rCRPS (global window)
 
@@ -98,6 +106,9 @@ Dronten, Opmeer, Leeuwarden, Arnhem.
 | timesfm-allwx | 0.0744 | 0.0784 | 0.0984 | 0.0899 | 0.0831 |
 | moirai-allwx | 0.1323 | 0.1324 | 0.1662 | 0.1366 | 0.1404 |
 | xgboost-cqr | 0.0702 | 0.0777 | 0.1021 | 0.0831 | 0.0838 |
+| timesfm3 | 0.1232 | 0.1221 | 0.1527 | 0.1219 | 0.1306 |
+| timesfm3-cov | 0.0606 | 0.0662 | 0.0819 | 0.0753 | 0.0700 |
+| timesfm3-allwx | 0.0561 | 0.0607 | 0.0777 | 0.0668 | 0.0671 |
 
 Run notes:
 
@@ -135,6 +146,28 @@ window, same targets, only the covariates change:
 - **Every covariate-fed TSFM beats the trained presets**; the gap between
   the best TSFM (Chronos-2) and the rest is model class, not input access.
 
+### The covariate-mechanism finding (TimesFM 3.0, 2026-09-02/03)
+
+TimesFM 3.0 (released 2026-08-31; natively multivariate via
+``past_future_covariates``) run at the same 0/3/11 covariate rungs as 2.5
+gives a paired ladder that separates three effects for the first time:
+
+- **Checkpoint generation** (univariate vs univariate): 0.1437 → 0.1301,
+  ~9.5% — real but modest, and still far behind every covariate-fed row.
+- **Covariate access** (each family's own ladder): still the dominant
+  lever — 3.0 improves 49% from input access alone (0.1301 → 0.0657).
+- **Covariate mechanism** (XReg side-channel vs native attention at equal
+  input): the 2.5→3.0 gap *widens* from 9.5% univariate to ~21% at 3
+  covariates and ~23% at 11 — native attention over covariates is worth
+  roughly an extra 11–13 points beyond the generation upgrade.
+
+`timesfm3-allwx` (0.0657 rCRPS / 0.0892 rMAE) is the **new overall
+leader**, ahead of chronos2-base-allwx (0.0711 / 0.0987) on both metrics —
+the rMAE comparison is band-independent, so the lead is not a
+narrower-band artifact (the rCRPS basis caveat still applies). It won on
+all five parks. Note the license asterisk above: the leader is
+non-commercial; the best *production-licensed* entry is still Chronos-2.
+
 ### The band-calibration finding (`xgboost-cqr`, 2026-08-31)
 
 The presets' rCRPS gap was diagnosed from the table itself: xgboost and
@@ -160,6 +193,63 @@ Caveats: TimesFM/Moirai rows are decile-band rCRPS (narrower basis);
 `wind_direction_10m` enters raw despite being circular (degrees) — noted,
 not addressed. Variant smoke tests live under scratch labels `smoke_*` /
 `smoke2_*` (1 park × 2 days; ignore).
+
+## External validation (researched 2026-09-01)
+
+Are these results an outlier, or the classical baseline misconfigured?
+Neither — checked against upstream and the published literature:
+
+**Upstream replication.** OpenSTEF's own
+[Benchmark Results page](https://openstef.github.io/openstef/user_guide/guides/benchmark_results.html)
+reports, for the same wind_park targets: Chronos-2 rCRPS **0.063** vs
+XGBoost **0.089** — a 29% gap, *larger* than ours (23%) — with the verbatim
+takeaway "Chronos-2 … posts the lowest aggregate rCRPS and rMAE on this
+benchmark." Our configs are copied from their official examples
+(`examples/benchmarks/liander2024/`), their runner uses the same backtest
+parameters (15-min sampling, 6h vintages, weekly retrain, D-1T06:00
+availability), and the wind-park targets' official window is exactly ours
+(2024-03-01 + 306 days). Model ranking matches; small absolute offsets
+remain unattributed (package/ONNX versions are candidates).
+
+**Independent replication of the headline margin.** The FETS benchmark
+([arXiv:2604.22328](https://arxiv.org/abs/2604.22328); 54 energy datasets,
+17,010 experiments) finds covariate-fed Chronos-2 beats XGBoost by ~23%
+median NRMSE (0.472 vs 0.611) — 32–34% on wind/PV — against an XGBoost
+tuned far harder than the OpenSTEF preset (SHAP feature selection, 250
+Optuna trials per quantile), which directly refutes "the baseline just
+needed tuning." fev-bench
+([arXiv:2509.26468](https://arxiv.org/abs/2509.26468), 100 held-out tasks)
+shows Chronos-2 ~30% ahead of tuned CatBoost/statistical ensembles on
+scaled quantile loss.
+
+**The calibration finding replicates.** GBM quantile undercoverage is
+documented in operational systems (NREL solar: 48–71% empirical coverage
+at 90% nominal —
+[arXiv:2510.15780](https://arxiv.org/html/2510.15780)); a Belgian
+offshore-wind study finds CQR beats parametric gradient boosting by 12%
+CRPS ([arXiv:2602.13010](https://arxiv.org/html/2602.13010)) — we measured
+11.8%.
+
+**The covariate ladder replicates.** UniWind
+([arXiv:2607.01670](https://arxiv.org/html/2607.01670v1)): history-only
+zero-shot TSFMs are >2× worse than NWP-fed models on wind — our
+univariate-TimesFM result exactly. NWP-covariate dominance is
+energy-forecasting consensus (GEFCom2014, Giebel & Kariniotakis 2017).
+
+**Boundaries and asterisks.** Tuned task-specific models still win
+univariate evaluations, monthly/quarterly series, M5-style retail
+(zero-shot Chronos loses ~4.7× WRMSSE to LightGBM —
+[arXiv:2507.22053](https://arxiv.org/abs/2507.22053)), finance, day-ahead
+*prices* ([arXiv:2506.08113](https://arxiv.org/abs/2506.08113)) and system
+*imbalance*
+([ML6/Elia](https://www.ml6.eu/en/blog/chronos-2-meets-the-grid-forecasting-system-imbalance-with-a-time-series-foundation-model)).
+Honest qualifiers on our own table: Chronos-2's pretraining corpus includes
+wind/solar data (a "zero-shot" asterisk); upstream's GBLinear+LightGBM
+*ensemble* (not run here) narrows to within 5% of Chronos-2, so the fair
+claim is "beats the individual trained presets," not "beats everything
+classical"; and our GBLinear's rank diverges from upstream's (they show it
+clearly ahead of XGBoost on wind rCRPS, we show a tie) — unresolved, don't
+lean on that row.
 
 ## Planned / candidate benchmarks
 

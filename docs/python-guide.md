@@ -143,10 +143,17 @@ with Store.connect(DSN) as store:
     store.write_predictors(TEMP, [(ts, 9.5) for ts in horizon], available_at=t0 - timedelta(hours=6))
 
     # A forecast is one run — one knowledge time, run provenance — with many points.
+    # Compute bounds are measured, never stated by arithmetic: clock reads around
+    # the inference. This example backfills a simulated knowledge time, so the
+    # real-wall-clock bounds diverge from available_at — the honest backfill shape.
+    started_at = datetime.now(timezone.utc)
+    points = [(ts, {"q10": 40.0, "q50": 42.0, "q90": 44.0}) for ts in horizon]  # the "model"
+    finished_at = datetime.now(timezone.utc)
     run_id = store.write_forecast(
         series=LOAD, model="guide-model", run_name="guide/site42",
         available_at=t0 - timedelta(hours=1),
-        points=[(ts, {"q10": 40.0, "q50": 42.0, "q90": 44.0}) for ts in horizon],
+        started_at=started_at, finished_at=finished_at,
+        points=points,
         params={"features": ["temperature"]},
     )
     # ...or into a workspace instance with its own band, by table name.
@@ -166,6 +173,11 @@ print(run_id)
 - **Columns are declared.** An undeclared column, a bare number where the column is
   ambiguous, or a table of the wrong role is refused before any row lands
   (`DeclarationMismatch`).
+- **Compute bounds are measured claims.** `started_at`/`finished_at` bound the inference
+  that produced the run — stated when measured, NULL otherwise, never defaulted;
+  `finished_at >= started_at` is enforced in schema. Under a release gate or backfill they
+  diverge from `available_at`; `ForecastStoreCallback` fills them automatically in live
+  operation.
 - **Writes are idempotent.** A repeated row is a no-op. On a single-belief actuals instance a
   *different* value for a stored target raises `ConflictingBelief`, which is deliberately
   not a `ValueError`: `except ValueError` around a write must not swallow it.

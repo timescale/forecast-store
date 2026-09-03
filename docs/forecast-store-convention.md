@@ -705,7 +705,9 @@ WHERE  f.series_id = forecast.get_series_id('mvf_gorredijk')
 ORDER  BY f.series_id, f.target_time, f.available_at DESC;
 ```
 
-Wrapped as the helper `forecast_asof(series, target_range, asof)`. With `asof = now()` it
+Wrapped as the helper `forecast_asof(config, series, target_start, target_end, asof, *,
+table=, recorded_before=, run_name=)` — builder in `forecast_store.queries`, executed form on
+`Store` — with the §9.2 system-clock pin and an optional producer pin. With `asof = now()` it
 is "current best forecast" for serving; the generated `latest_<table>` view covers the hot
 dashboard path. **The same query against `predictors` (on `available_at`) is
 leakage-free feature assembly** — one query shape serves both serving and

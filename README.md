@@ -45,7 +45,7 @@ Two ideas carry the whole design:
 ## Quickstart
 
 ```bash
-pip install forecast-store        # v0 in preparation; see status below
+pip install forecast-store
 forecast-store ddl                # print the generated schema
 forecast-store provision --dsn postgres://...
 forecast-store provision --dsn postgres://... --config store.yaml   # any set of tables, from a YAML declaration
@@ -205,10 +205,9 @@ Built for TimescaleDB (hypertables, columnstore, and the generated
 data-quality sweep); the core schema and read/write paths also run on plain
 Postgres 14+. Python ≥ 3.12.
 
-**Status: pre-release.** The convention is draft v0.4 (spike-validated; the
-spec's §11 keeps an honest ledger of open and closed design questions). The
-PyPI name currently holds a placeholder; the v0 package release is in
-preparation, and APIs may still change.
+**Status: pre-1.0.** The convention is draft v0.4 (spike-validated; the
+spec's §11 keeps an honest ledger of open and closed design questions).
+`forecast-store` 0.1.0 is on PyPI; APIs may still change before 1.0.
 
 ## License
 

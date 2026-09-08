@@ -1,6 +1,6 @@
 [project]
 name = "forecast-store"
-version = "0.0.1.dev0"
+version = "0.1.0"
 description = "The forecast store: TimescaleDB/Postgres as the persistence, evaluation, and monitoring layer for any forecasting model."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -23,11 +23,11 @@ foundation = [
 timesfm = [
     "timesfm[torch]>=3.0",
 ]
-moirai = [
-    # uni2ts main pins numpy~=1.26 / torch<2.5 (incompatible with openstef-core);
-    # PR #256 relaxes them — unreviewed community branch, benchmark-baseline only.
-    "uni2ts @ git+https://github.com/chandragupta/uni2ts@feature/python-3.13-build",
-]
+# No `moirai` extra: PyPI rejects direct-URL dependencies, and uni2ts main
+# pins numpy~=1.26 / torch<2.5 (incompatible with openstef-core). To run the
+# Moirai benchmark baselines, install PR #256's branch manually:
+#   uv pip install "uni2ts @ git+https://github.com/chandragupta/uni2ts@feature/python-3.13-build"
+# (unreviewed community branch — benchmark-baseline risk tolerance only)
 dev = [
     "pytest>=8",
 ]

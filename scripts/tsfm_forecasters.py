@@ -186,7 +186,8 @@ def load_moirai(n_covariates: int = 3):
     """Load Moirai 2.0 R small once; quantile-native, covariate-capable.
 
     Installed from uni2ts PR #256's branch (main pins numpy~=1.26/torch<2.5,
-    incompatible with openstef-core) — benchmark-baseline risk tolerance only.
+    incompatible with openstef-core) — benchmark-baseline risk tolerance only; installed manually (no extra —
+    PyPI rejects direct-URL dependencies).
     """
     from uni2ts.model.moirai2 import Moirai2Forecast, Moirai2Module
 

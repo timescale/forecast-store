@@ -168,8 +168,8 @@ def build_forecaster_factory(model: str, cache_dir: Path, quantiles, horizons):
         return factory, 1
 
     if model.startswith("moirai"):
-        # Zero-shot; decile band subset like timesfm. Requires `--extra moirai`
-        # (uni2ts PR-256 branch). Bare = the official three weather covariates;
+        # Zero-shot; decile band subset like timesfm. Requires uni2ts (PR-256
+        # branch; see pyproject — installed manually, no extra). Bare = the official three weather covariates;
         # -allwx = every weather column (native any-variate attention).
         from tsfm_forecasters import MoiraiBacktestForecaster, load_moirai
 
@@ -226,6 +226,11 @@ def main() -> int:
     parser.add_argument("--group", default="wind_park")
     parser.add_argument("--targets", default="all", help="'all' or comma-separated target names")
     parser.add_argument("--start", default="2024-03-01")
+    parser.add_argument(
+        "--train-start", default=None,
+        help="override the targets' training-history start (upstream's runner "
+             "clips it to 2024-02-01; the yaml says 2024-01-01)",
+    )
     parser.add_argument("--days", type=int, default=306)
     parser.add_argument("--run-prefix", default="liander")
     parser.add_argument("--dsn", default=os.environ.get("FORECAST_STORE_TEST_DSN"))
@@ -283,8 +288,13 @@ def main() -> int:
                 longitude=entry["longitude"],
                 upper_limit=entry["upper_limit"],
                 lower_limit=entry["lower_limit"],
-                # Official per-target training history start (2024-01-01).
-                train_start=datetime.fromisoformat(str(entry["train_start"])),
+                # Official per-target training history start (2024-01-01);
+                # NOTE upstream's own runner clips this to 2024-02-01.
+                train_start=(
+                    datetime.fromisoformat(args.train_start).replace(tzinfo=timezone.utc)
+                    if args.train_start
+                    else datetime.fromisoformat(str(entry["train_start"]))
+                ),
                 benchmark_start=bench_start,
                 benchmark_end=bench_end,
             )

@@ -85,6 +85,9 @@ Dronten, Opmeer, Leeuwarden, Arnhem.
 | TimesFM 3.0 (zero-shot)† | `liander_timesfm3` | none (univariate) | deciles | 0.1301 | 0.1793 | 2026-09-02 |
 | TimesFM 3.0 (zero-shot)† | `liander_timesfm3-cov` | 3 wx, native | deciles | 0.0708 | 0.0954 | 2026-09-03 |
 | TimesFM 3.0 (zero-shot)† | `liander_timesfm3-allwx` | all 11 wx, native | deciles | **0.0657** | **0.0892** | 2026-09-03 |
+| XGBoost, upstream-matched inputs | `liander_xgboost-full` | 11 wx + EPEX + profiles | 7-level | 0.0949 | 0.1104 | 2026-09-07 |
+| GBLinear, upstream-matched inputs | `liander_gblinear-full` | 11 wx + EPEX + profiles | 7-level | 0.0957 | 0.1325 | 2026-09-07 |
+| XGBoost + CQR, upstream-matched | `liander_xgboost-cqr-full` | 11 wx + EPEX + profiles | 7-level | 0.0830 | 0.1120 | 2026-09-07 |
 
 † TimesFM 3.0 (330M, `google/timesfm-3.0-pytorch`) weights are under the
 TimesFM Non-Commercial License v1.0 — benchmark/evaluation use only, never
@@ -194,6 +197,70 @@ Caveats: TimesFM/Moirai rows are decile-band rCRPS (narrower basis);
 not addressed. Variant smoke tests live under scratch labels `smoke_*` /
 `smoke2_*` (1 park × 2 days; ignore).
 
+## The solar group (lnsolar_*, completed 2026-09-04 → 09-07)
+
+Same harness, same window, `--group solar_park` (5 normalized solar parks).
+Solar has the deterministic anchor wind lacks — nights are exactly zero —
+so it tests whether the covariate findings are anchored in physics.
+
+### Headline (avg of 5 parks, global window)
+
+| model | covariates | avg rCRPS | avg rMAE@q50 |
+|---|---|---|---|
+| chronos2-base-allwx | all 11 wx | **0.0413** | 0.0595 |
+| chronos2-base | 3 wx | 0.0424 | 0.0615 |
+| timesfm3-allwx† | all 11 wx, native | 0.0433 | **0.0599** |
+| timesfm3-cov† | 3 wx, native | 0.0437 | 0.0603 |
+| xgboost-cqr | all 11 wx + engineered | 0.0539 | 0.0679 |
+| xgboost-cqr-full | + EPEX + profiles | 0.0543 | 0.0687 |
+| xgboost | all 11 wx + engineered | 0.0552 | 0.0664 |
+| timesfm3† | none (univariate) | 0.0553 | 0.0804 |
+| xgboost-full | + EPEX + profiles | 0.0554 | 0.0665 |
+| gblinear | all 11 wx + engineered | 0.0571 | 0.0763 |
+| gblinear-full | + EPEX + profiles | 0.0574 | 0.0775 |
+| timesfm-allwx (2.5, XReg)† | all 11 wx via XReg | 0.0590 | 0.0749 |
+| timesfm (2.5)† | none (univariate) | 0.0598 | 0.0815 |
+
+### Per-park rCRPS (global window)
+
+| model | Westwoud | Oosterwolde | Zutphen | Rotterdam | Leeuwarden |
+|---|---|---|---|---|---|
+| chronos2-base-allwx | 0.0379 | 0.0410 | 0.0418 | 0.0489 | 0.0410 |
+| chronos2-base | 0.0385 | 0.0408 | 0.0420 | 0.0495 | 0.0409 |
+| timesfm3-allwx | 0.0401 | 0.0420 | 0.0424 | 0.0508 | 0.0414 |
+| timesfm3-cov | 0.0400 | 0.0423 | 0.0427 | 0.0515 | 0.0422 |
+| xgboost-cqr | 0.0499 | 0.0515 | 0.0536 | 0.0613 | 0.0534 |
+| xgboost-cqr-full | 0.0502 | 0.0520 | 0.0538 | 0.0623 | 0.0532 |
+| xgboost | 0.0497 | 0.0541 | 0.0546 | 0.0637 | 0.0537 |
+| timesfm3 | 0.0518 | 0.0528 | 0.0541 | 0.0622 | 0.0558 |
+| xgboost-full | 0.0498 | 0.0543 | 0.0552 | 0.0635 | 0.0539 |
+| gblinear | 0.0548 | 0.0579 | 0.0536 | 0.0645 | 0.0544 |
+| gblinear-full | 0.0558 | 0.0591 | 0.0543 | 0.0638 | 0.0542 |
+| timesfm-allwx | 0.0541 | 0.0576 | 0.0578 | 0.0698 | 0.0555 |
+| timesfm | 0.0563 | 0.0572 | 0.0585 | 0.0660 | 0.0609 |
+
+### Solar findings
+
+- **The astronomy anchor is real.** Univariate TimesFM 3.0 lands even with
+  trained XGBoost (0.0553 vs 0.0552); on wind it trailed by 38%. With a
+  deterministic day/night scaffold, history alone nearly suffices.
+- **The covariate ladder compresses and saturates**: 0.0553 → 0.0437 →
+  0.0433 — 21% total (vs 49% on wind), with the 3→11 rung worth <1%
+  (`shortwave_radiation` is *the* solar driver; the other eight add
+  nothing). Covariate access dominates in proportion to how much of the
+  signal is weather-driven.
+- **The XReg side-channel collapses**: worth 41% on wind, ~1% on solar
+  (0.0598 → 0.0590) while native attention still extracts 22% — the linear
+  side-channel mostly re-derives the diurnal correlation a univariate model
+  already has; the incremental (cloud) signal is conditional and nonlinear.
+- **Leadership is domain-split**: Chronos-2 retakes the lead on solar
+  (0.0413/0.0424 vs timesfm3-allwx 0.0433), medians near-tied — neither
+  frontier model dominates both groups. Upstream comparability holds with
+  the same offset as wind (our chronos2-base 0.0424 vs their published
+  0.036).
+- **Calibration matters less** where half of every day is a
+  trivially-certain zero: CQR buys −2.4% rCRPS (vs −11.8% on wind).
+
 ## Runtimes (measured, same machine)
 
 Wall clocks from the runner logs (process start → exit, includes model load,
@@ -231,6 +298,59 @@ live operation (`on_predict_start` → `on_predict_end`); the sweep wall clock
 is a derived aggregate. Remaining gap: the *backtest* pipeline doesn't pass
 forecaster timing to the storage adapter, so benchmark rows stay NULL —
 timings above are from runner logs.
+
+## Replication fidelity vs upstream's published numbers (investigated 2026-09-07)
+
+Our numbers run ~6–35% above OpenSTEF's published table with rankings
+preserved. Attribution, by evidence:
+
+- **Input data plane: exonerated, bit-for-bit.** A direct diff of
+  upstream's parquet-backed provider vs our store-backed provider (Opmeer):
+  measurements identical (32,157/32,160 rows; load values max|Δ| = 0), and
+  as-of predictor views at four decision moments **exactly identical** on
+  every timestamp and all 11 weather columns (zero value or NaN
+  mismatches). The store's extra trailing rows are the `data_margin`;
+  inert.
+- **Preset rows: the missing-covariate hypothesis was tested and
+  refuted.** Upstream's provider defaults `use_prices=True,
+  use_profiles=True`, serving **EPEX_NL prices** and **Dutch standard
+  consumption profiles** our store lacked — so we ingested both
+  (`ingest_liander.py --shared`, 16 series under `ln24/shared/`) and reran
+  the presets as `-full` variants. Result on wind: **no effect**
+  (xgboost 0.0946 → 0.0949, gblinear 0.0947 → 0.0957, xgboost-cqr
+  0.0834 → 0.0830 — all within noise). Physically sensible: consumption
+  profiles and prices carry no signal for pure generation targets; they
+  would matter for upstream's consumption groups. With the data plane
+  bit-identical and the feeds immaterial, the classical offset is most
+  likely **package-version drift** (upstream's June-2026 run vs our
+  late-August stack; GBLinear's 35% divergence plus rank flip suggests a
+  gblinear-affecting preset change). Solar confirms the null (all three
+  -full deltas within noise there too). Definitive close-out would be a
+  June-pinned scratch venv rerun; not yet done. Public claims survive
+  regardless: upstream's own published XGBoost loses to Chronos-2 by ~29%.
+- **Chronos rows (~15%): unattributed residual** — leading suspects: the
+  checkpoint variant (upstream's `recommended()` per-host vs the `DYNAMIC`
+  variant macOS forces on us) and package-version drift (their table dates
+  June 2026; our stack is late-August).
+- **Curiosity**: 3 measurement rows at 2024-10-27 00:15–00:45 UTC (the DST
+  fall-back window) exist twice in the source parquet with identical
+  (timestamp, available_at); our revisioned PK collapsed them first-wins —
+  the designed retcon refusal meeting real source data. Score impact nil.
+
+Open remediation: ingest EPEX_NL + profiles as predictor series and rerun
+the three preset rows (wind + solar) for a fully-matched baseline.
+
+## Figure provenance
+
+The published figures derive from this data with one methodological choice
+worth recording: the actuals-vs-forecast overlay (four days, Alphen wind
+park) selects its window **programmatically**, not by eye — scanning all
+306 days for the window whose Chronos-2/XGBoost day-ahead error ratio
+matches the full benchmark (window 0.896 vs overall 0.897) among
+high-variance windows, with forecasts chosen per the operational rule (the
+vintage in force at D−1 06:00). Day-ahead composite MAE over the full 306
+days, Alphen: Chronos-2 0.0827 vs XGBoost 0.0922. Generator scripts live
+alongside the figures.
 
 ## External validation (researched 2026-09-01)
 

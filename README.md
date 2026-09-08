@@ -139,37 +139,46 @@ result sink for its public liander2024 benchmark — real grid measurements with
 their real ~48-hour publication lags, weather as versioned vintage histories.
 Full official window, 5 wind parks × 306 days, identical store-served data:
 
-| model | weather covariates | avg rCRPS | avg rMAE@q50 |
-|---|---|---|---|
-| TimesFM 3.0 (zero-shot)\*† | all 11, native | **0.0657** | **0.0892** |
-| TimesFM 3.0 (zero-shot)\*† | 3, native | 0.0708 | 0.0954 |
-| Chronos-2 base (zero-shot) | all 11 | 0.0711 | 0.0987 |
-| Chronos-2 base (zero-shot) | 3 (official example) | 0.0726 | 0.1016 |
-| Chronos-2 small (zero-shot) | 3 | 0.0739 | 0.1036 |
-| XGBoost + conformal calibration | all 11 + engineered | 0.0834 | 0.1126 |
-| TimesFM 2.5 (zero-shot)\* | all 11, via XReg | 0.0848 | 0.1116 |
-| TimesFM 2.5 (zero-shot)\* | 3, via XReg | 0.0894 | 0.1185 |
-| XGBoost (weekly retrain) | all 11 + engineered | 0.0946 | 0.1107 |
-| GBLinear (weekly retrain) | all 11 + engineered | 0.0947 | 0.1312 |
-| TimesFM 3.0 (zero-shot)\*† | none (univariate) | 0.1301 | 0.1793 |
-| Moirai 2.0 R small (zero-shot)\* | all 11 | 0.1416 | 0.1868 |
-| Moirai 2.0 R small (zero-shot)\* | 3 | 0.1421 | 0.1856 |
-| TimesFM 2.5 (zero-shot)\* | none (univariate) | 0.1437 | 0.1928 |
+The whole suite runs on two of the benchmark's groups — its hardest
+(wind: weather-driven, no daily rhythm) and its most anchored (solar:
+nights are exactly zero). rCRPS, lower is better; each column's leader in
+bold:
 
-Three findings carry the table: input access moves TimesFM 41–49%
-(each family's univariate row vs. its all-11 row); the covariate
-*mechanism* matters — at equal input, TimesFM 3.0's native covariate
-attention beats 2.5's linear XReg side-channel by ~21–23%, far more than
-the ~9% generation gap between them univariate; and conformal calibration
-alone closes half of the classical presets' gap (rCRPS −12%, median
-untouched). Most of what separates this table is covariate access,
-covariate mechanism, and band calibration — not raw model class. The store
-is what makes the comparison honest, serving every model identical
-versioned vintages.
+| model | weather covariates | wind | solar |
+|---|---|---|---|
+| TimesFM 3.0 (zero-shot)\*† | all 11, native | **0.0657** | 0.0433 |
+| TimesFM 3.0 (zero-shot)\*† | 3, native | 0.0708 | 0.0437 |
+| Chronos-2 (zero-shot) | all 11 | 0.0711 | **0.0413** |
+| Chronos-2 (zero-shot) | 3 (official example) | 0.0726 | 0.0424 |
+| Chronos-2 small (zero-shot) | 3 | 0.0739 | — |
+| XGBoost + conformal calibration | all 11 + engineered | 0.0834 | 0.0539 |
+| TimesFM 2.5 (zero-shot)\* | all 11, via XReg | 0.0848 | 0.0590 |
+| TimesFM 2.5 (zero-shot)\* | 3, via XReg | 0.0894 | — |
+| XGBoost (weekly retrain) | all 11 + engineered | 0.0946 | 0.0552 |
+| GBLinear (weekly retrain) | all 11 + engineered | 0.0947 | 0.0571 |
+| TimesFM 3.0 (zero-shot)\*† | none (univariate) | 0.1301 | 0.0553 |
+| Moirai 2.0 R small (zero-shot)\* | all 11 | 0.1416 | — |
+| Moirai 2.0 R small (zero-shot)\* | 3 | 0.1421 | — |
+| TimesFM 2.5 (zero-shot)\* | none (univariate) | 0.1437 | 0.0598 |
+
+The two domains read together are the finding: on wind, covariate access is
+everything (TimesFM 3.0 univariate → all-11 improves 49%) and TimesFM 3.0
+leads; on solar, the day/night anchor makes univariate TSFMs competitive
+with trained models, the ladder compresses to 21% and saturates at three
+covariates, a linear covariate side-channel collapses to worthless while
+native attention keeps working — and Chronos-2 takes the lead. Neither
+frontier model dominates both.
+
+Beneath the domain split, three levers separate the rows: covariate
+access, covariate *mechanism* (native attention vs. a linear side-channel),
+and band calibration (split-conformal alone closes half the classical gap
+on wind, median untouched) — not raw model class. The store is what makes
+the comparison honest, serving every model identical versioned vintages.
 
 \* Decile-native models: scored over their own 5-level band (a separate
 forecast-log instance whose declared band is true), so their rCRPS spans a
-narrower band than the others' (the rMAE column is band-independent).
+narrower band than the others'; rankings hold on band-independent rMAE
+(recorded per run in the benchmark log).
 † TimesFM 3.0 weights are non-commercial-licensed — benchmark use only;
 the best production-licensed model here is Chronos-2. Every number above is a row in the store's
 evaluation tables; the full record — per-park results, run labels, and the

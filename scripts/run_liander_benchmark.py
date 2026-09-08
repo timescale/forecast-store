@@ -70,6 +70,12 @@ MODELS = (
     "timesfm3",
     "timesfm3-cov",
     "timesfm3-allwx",
+    # -full: upstream-matched preset inputs — weather PLUS the shared feeds
+    # upstream's provider serves by default (EPEX_NL prices, standard
+    # profiles; ingest with `ingest_liander.py --shared` first).
+    "xgboost-full",
+    "gblinear-full",
+    "xgboost-cqr-full",
 )
 CHRONOS_BATCH_SIZE = 16  # the official example's batched-inference setting
 
@@ -180,7 +186,7 @@ def build_forecaster_factory(model: str, cache_dir: Path, quantiles, horizons):
     )
     from openstef_models.presets import ForecastingWorkflowConfig
 
-    base_model = model.removesuffix("-cqr")
+    base_model = model.removesuffix("-full").removesuffix("-cqr")
     config = ForecastingWorkflowConfig(
         model_id="common_model_",
         run_name=None,
@@ -197,7 +203,7 @@ def build_forecaster_factory(model: str, cache_dir: Path, quantiles, horizons):
         relative_humidity_column="relative_humidity_2m",
         energy_price_column="EPEX_NL",
     )
-    if model.endswith("-cqr"):
+    if model.removesuffix("-full").endswith("-cqr"):
         # Same preset, wrapped with held-out split-conformal calibration.
         from cqr_forecaster import create_cqr_preset_backtest_forecaster
 
@@ -284,7 +290,21 @@ def main() -> int:
             )
         )
         measurement_series[entry["name"]] = load_series
-        predictor_series[entry["name"]] = weather_series
+        predictor_series[entry["name"]] = dict(weather_series)
+
+    full = [m for m in models if m.endswith("-full")]
+    if full:
+        if len(full) != len(models):
+            parser.error("mix of -full and non-full models in one invocation")
+        from ingest_liander import shared_series_map
+
+        with psycopg.connect(args.dsn) as conn, conn.cursor() as cur:
+            shared = shared_series_map(cur)
+        if not shared:
+            parser.error("-full models need the shared feeds: run ingest_liander.py --shared")
+        print(f"shared covariates: {sorted(shared)}")
+        for name in predictor_series:
+            predictor_series[name].update(shared)
 
     provider = TimescaleTargetProvider(
         source=args.dsn,

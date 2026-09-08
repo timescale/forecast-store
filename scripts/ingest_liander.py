@@ -110,6 +110,52 @@ def _copy(cur, table: str, columns: str, rows) -> int:
     return n
 
 
+SHARED_PREFIX = "ln24/shared"
+
+
+def shared_series_map(cur) -> dict[str, str]:
+    """Engine column -> series name for the shared feeds (EPEX + profiles),
+    reconstructed from the registry (columns are upper-case slugs)."""
+    cur.execute(
+        "SELECT name FROM forecast.series WHERE name LIKE %s", (f"{SHARED_PREFIX}/%",)
+    )
+    mapping = {}
+    for (name,) in cur.fetchall():
+        leaf = name.rsplit("/", 1)[1]
+        mapping[leaf.upper()] = name
+    return mapping
+
+
+def ingest_shared(conn) -> None:
+    """The provider-shared predictor feeds upstream serves alongside weather:
+    EPEX_NL day-ahead prices and Dutch standard consumption profiles — both
+    versioned vintages (timestamp, available_at, value)."""
+    import pandas as pd
+    from huggingface_hub import hf_hub_download
+
+    with conn.cursor() as cur:
+        for filename, tag in (("EPEX.parquet", "prices"), ("profiles.parquet", "profiles")):
+            path = hf_hub_download(repo_id=REPO, repo_type="dataset", filename=filename)
+            frame = pd.read_parquet(path)
+            for col in (c for c in frame.columns if c not in ("timestamp", "available_at")):
+                series_name = f"{SHARED_PREFIX}/{col.lower()}"
+                sid = _register(conn, series_name, {
+                    "dataset": "liander2024-stef-benchmark",
+                    "tags": {"shared": tag, "column": col},
+                })
+                if _has_points(cur, "predictors", sid):
+                    print(f"skip  {series_name} (already ingested)")
+                    continue
+                sub = frame[["timestamp", "available_at", col]].dropna()
+                n = _copy(
+                    cur, "predictors",
+                    "series_id, target_time, available_at, value",
+                    ((sid, ts, avail, float(v)) for ts, avail, v in sub.itertuples(index=False)),
+                )
+                print(f"predictors  {series_name}: {n} vintage rows")
+    conn.commit()
+
+
 def ingest_target(conn, group: str, entry: dict) -> None:
     import pandas as pd
     from huggingface_hub import hf_hub_download
@@ -171,8 +217,16 @@ def main() -> int:
     parser.add_argument("--group", default="wind_park")
     parser.add_argument("--target", default=None)
     parser.add_argument("--all-targets", action="store_true", help="ingest every target in the group")
+    parser.add_argument("--shared", action="store_true",
+                        help="ingest the shared feeds (EPEX prices, standard profiles)")
     parser.add_argument("--dsn", default=os.environ.get("FORECAST_STORE_TEST_DSN"))
     args = parser.parse_args()
+
+    if args.shared:
+        with psycopg.connect(args.dsn) as conn:
+            ingest_shared(conn)
+        print("done")
+        return 0
 
     entries = (
         load_group_entries(args.group)
